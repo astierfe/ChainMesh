@@ -1,0 +1,35 @@
+# Compiler outputs
+out/
+cache/
+broadcast/
+
+# Dependencies
+node_modules/
+
+# Environment
+.env
+.env.local
+.env.*.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Foundry
+forge-cache/
+lcov.info
+*.gas-snapshot
+
+# Logs
+*.log
+
+# Temporary
+*.tmp
+*.bak

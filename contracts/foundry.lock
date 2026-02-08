@@ -1,0 +1,23 @@
+{
+  "lib/ccip": {
+    "tag": {
+      "name": "v2.9.0",
+      "rev": "065ef85b5fa52bb4583ebad9e51c20a977b64e7a"
+    }
+  },
+  "lib/chainlink": {
+    "rev": "07c9b82e8dfc5942c1faff10141ee981c44a4cf0"
+  },
+  "lib/chainlink-brownie-contracts": {
+    "tag": {
+      "name": "1.3.0",
+      "rev": "5cb41fbc9b525338b6098da5ea7dd0b7e92f89e4"
+    }
+  },
+  "lib/openzeppelin-contracts": {
+    "tag": {
+      "name": "v5.5.0",
+      "rev": "fcbae5394ae8ad52d8e580a3477db99814b9d565"
+    }
+  }
+}
