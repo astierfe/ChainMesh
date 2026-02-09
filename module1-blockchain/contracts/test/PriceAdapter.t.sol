@@ -26,8 +26,7 @@ contract PriceAdapterTest is Test {
 
         // Grant updater role
         oracle.grantRole(oracle.UPDATER_ROLE(), updater);
-        oracle.grantRole(oracle.UPDATER_ROLE(), address(repAdapter));
-        oracle.grantRole(oracle.UPDATER_ROLE(), address(priceAdapter));
+        oracle.grantRole(oracle.UPDATER_ROLE(), address(adapter));
     }
 
     // ========== IDataAdapter Tests ==========
@@ -195,9 +194,9 @@ contract PriceAdapterTest is Test {
     // ========== Access Control Tests ==========
 
     function test_UpdatePrice_RequiresUpdaterRole() public {
-        address nonUpdater = makeAddr("nonUpdater");
+        // Revoke adapter's role so oracle will reject the call
+        oracle.revokeRole(oracle.UPDATER_ROLE(), address(adapter));
 
-        vm.prank(nonUpdater);
         vm.expectRevert();
         adapter.updatePrice(IGenericOracle(address(oracle)), "ETH", 3000 ether, 18);
     }

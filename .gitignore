@@ -31,11 +31,19 @@ yarn-error.log*
 package-lock.json
 yarn.lock
 
-# Foundry
-contracts/cache/
-contracts/out/
-contracts/broadcast/
-contracts/lib/
+# Module 1 - Blockchain (Foundry)
+module1-blockchain/contracts/cache/
+module1-blockchain/contracts/out/
+module1-blockchain/contracts/broadcast/
+module1-blockchain/contracts/lib/forge-std/
+
+# Module 2 - Orchestration
+module2-orchestration/node_modules/
+module2-orchestration/.env
+module2-orchestration/logs/*.json
+module2-orchestration/dist/
+module2-orchestration/.n8n/
+module2-orchestration/coverage/
 
 # Logs
 *.log

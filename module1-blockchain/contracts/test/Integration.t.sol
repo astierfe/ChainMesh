@@ -159,6 +159,9 @@ contract IntegrationTest is Test {
         vm.prank(updater);
         priceAdapter.updatePrice(IGenericOracle(address(oracle)), "ETH", 3200 ether, 18);
 
+        // Fund oracle to pay CCIP fees
+        vm.deal(address(oracle), 1 ether);
+
         // Send responses
         vm.prank(updater);
         oracle.sendResponse(repMessageId, repKey);
@@ -166,9 +169,15 @@ contract IntegrationTest is Test {
         vm.prank(updater);
         oracle.sendResponse(priceMessageId, priceKey);
 
-        // Verify responses were sent (check processed)
-        assertTrue(oracle.processedMessages(repMessageId));
-        assertTrue(oracle.processedMessages(priceMessageId));
+        // Verify responses were sent (check processed via replay protection hash)
+        bytes32 repHash = keccak256(abi.encodePacked(repMessageId, ARBITRUM_CHAIN_SELECTOR, abi.encode(address(cache))));
+        bytes32 priceHash = keccak256(abi.encodePacked(priceMessageId, ARBITRUM_CHAIN_SELECTOR, abi.encode(address(cache))));
+        assertTrue(oracle.processedMessages(repHash));
+        assertTrue(oracle.processedMessages(priceHash));
+
+        // Simulate CCIP delivery of responses to cache
+        _deliverResponseToCache(repKey, keccak256("resp-rep"));
+        _deliverResponseToCache(priceKey, keccak256("resp-price"));
 
         // Verify cache received data
         (bytes memory repCached, , ) = cache.getData(repKey);
@@ -290,9 +299,14 @@ contract IntegrationTest is Test {
             abi.encode(repKey, repAdapter.getSchemaHash(), address(cache))
         );
 
+        // Fund oracle to pay CCIP fees
+        vm.deal(address(oracle), 1 ether);
+
         // Send response
         vm.prank(updater);
         oracle.sendResponse(msgId1, repKey);
+
+        _deliverResponseToCache(repKey, keccak256("resp-cache-rep"));
 
         // Verify Cache received reputation data
         (bytes memory cachedRep, bool isFromCache, ) = cache.getData(repKey);
@@ -314,10 +328,26 @@ contract IntegrationTest is Test {
         vm.prank(updater);
         oracle.sendResponse(msgId2, priceKey);
 
+        _deliverResponseToCache(priceKey, keccak256("resp-cache-price"));
+
         (bytes memory cachedPrice, bool isPriceCached, ) = cache.getData(priceKey);
         assertTrue(isPriceCached, "Price should be cached");
 
         (uint256 price, ) = abi.decode(cachedPrice, (uint256, uint8));
         assertEq(price, 3500 ether);
+    }
+
+    // ========== Helpers ==========
+
+    /// @dev Simulate CCIP delivery of an oracle response to the cache
+    function _deliverResponseToCache(bytes32 key, bytes32 messageId) internal {
+        (bytes memory value, uint32 timestamp, bytes32 schemaHash, ) = oracle.getData(key);
+        router.deliverMessage(
+            address(cache),
+            messageId,
+            SEPOLIA_CHAIN_SELECTOR,
+            abi.encode(address(oracle)),
+            abi.encode(key, value, timestamp, schemaHash)
+        );
     }
 }

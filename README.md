@@ -14,171 +14,92 @@ L'objectif est de fournir une couche d'infrastructure blockchain que n'importe q
 - Utiliser un système de cache TTL pour optimiser les coûts
 - Adapter les données métier via des adapters pluggables
 
-## 🏗️ Architecture Module 1 - Blockchain Layer
-
-### Composants principaux
+## 📁 Structure du Monorepo
 
 ```
-┌─────────────────────────────────────────────────────────────┐
-│                    Consumer Chain (Arbitrum)                 │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │  GenericCache (TTL 24h + Rate Limiting)                │ │
-│  │  - Cache hit/miss/stale logic                          │ │
-│  │  - Default values par schema                           │ │
-│  │  - Rate limiting per-key (1 req/hour)                  │ │
-│  └────────────────────────────────────────────────────────┘ │
-│                           │                                   │
-│                           │ CCIP Request                      │
-└───────────────────────────┼───────────────────────────────────┘
-                            │
-                            ▼
-┌─────────────────────────────────────────────────────────────┐
-│                     Oracle Chain (Sepolia)                   │
-│  ┌────────────────────────────────────────────────────────┐ │
-│  │  GenericOracle (Storage + CCIP)                        │ │
-│  │  - Key-value storage générique                         │ │
-│  │  - Schema versioning (bytes32 schemaHash)              │ │
-│  │  - CCIP receiver/sender                                │ │
-│  │  - Access control (UPDATER_ROLE)                       │ │
-│  └────────────────────────────────────────────────────────┘ │
-│                           │                                   │
-│                           │ CCIP Response                     │
-└───────────────────────────┼───────────────────────────────────┘
-                            │
-                            ▼
-                    ┌──────────────┐
-                    │   Adapters   │
-                    ├──────────────┤
-                    │ Reputation   │
-                    │ Price        │
-                    │ Custom...    │
-                    └──────────────┘
+chainmesh/
+├── module1-blockchain/       # Smart contracts Foundry/Solidity
+│   └── contracts/
+│       ├── src/              # Contrats sources
+│       ├── test/             # Tests unitaires et d'intégration
+│       ├── script/           # Scripts de déploiement
+│       └── foundry.toml      # Configuration Foundry
+│
+├── module2-orchestration/    # Backend orchestration (à venir)
+│   ├── src/                  # Code source TypeScript/Node.js
+│   ├── tests/                # Tests
+│   ├── workflows/            # n8n workflows
+│   └── migrations/           # Migrations DB
+│
+├── docs/                     # Documentation globale
+└── README.md                 # Ce fichier
 ```
-
-### 1. GenericOracle (Oracle Chain)
-
-Infrastructure de stockage générique avec support CCIP.
-
-**Fonctionnalités :**
-- Stockage key-value avec versioning de schema
-- Reception de requêtes CCIP cross-chain
-- Envoi de réponses CCIP
-- Gestion des accès (UPDATER_ROLE, admin)
-- Whitelist de chains supportées
-
-**Fichier :** [`contracts/src/GenericOracle.sol`](contracts/src/GenericOracle.sol)
-
-### 2. GenericCache (Consumer Chain)
-
-Cache TTL avec rate limiting pour optimiser les coûts CCIP.
-
-**Fonctionnalités :**
-- Cache 24h avec états fresh/stale
-- Rate limiting per-key (1 requête/heure)
-- Default values configurables par schema
-- Fallback automatique sur valeurs par défaut
-
-**Fichier :** [`contracts/src/GenericCache.sol`](contracts/src/GenericCache.sol)
-
-### 3. Adapters (Pluggable)
-
-Couche d'adaptation pour différents types de données.
-
-**Adapters disponibles :**
-- **ReputationAdapter** : Scores de réputation + evidence IPFS
-- **PriceAdapter** : Prix d'assets avec decimals configurables
-
-**Interface standard :** [`contracts/src/interfaces/IDataAdapter.sol`](contracts/src/interfaces/IDataAdapter.sol)
 
 ## 🚀 Quick Start
 
-### Prérequis
+### Module 1 - Blockchain Layer
 
-- [Foundry](https://book.getfoundry.sh/getting-started/installation)
-- Solidity 0.8.20
-
-### Installation
+Infrastructure blockchain avec GenericOracle, GenericCache et Adapters.
 
 ```bash
-# Cloner le repo
-git clone https://github.com/astierfe/ChainMesh.git
-cd ChainMesh
-
-# Installer les dépendances
-cd contracts
+cd module1-blockchain/contracts
 forge install
+forge test
 ```
 
-### Tests
+📖 **Documentation complète** : [module1-blockchain/contracts/README.md](module1-blockchain/contracts/README.md)
+
+**État actuel :** ✅ Complété (123 tests, >80% coverage)
+
+### Module 2 - Orchestration (À venir)
+
+Backend d'orchestration avec n8n, OpenAI et webhooks.
 
 ```bash
-# Tous les tests
-forge test
-
-# Tests avec verbosité
-forge test -vvv
-
-# Tests avec coverage
-forge coverage
-
-# Tests spécifiques
-forge test --match-contract GenericOracleTest
-forge test --match-contract ReputationAdapterTest
+cd module2-orchestration
+npm install
+npm run dev
 ```
 
-### Coverage actuelle
+**État actuel :** 🚧 Structure créée, implémentation à venir
 
-- **GenericOracle** : 97.10% lines, 95.95% statements (45 tests)
-- **GenericCache** : 96.36% lines, 93.44% statements (32 tests)
-- **ReputationAdapter** : >80% coverage (23 tests)
-- **PriceAdapter** : >80% coverage (15 tests)
-- **Integration** : 8 tests cross-adapter
+## 🏗️ Architecture Globale
 
-**Total : 123 tests**
+### Module 1 : Blockchain Layer
+- **GenericOracle** : Stockage key-value générique avec CCIP
+- **GenericCache** : Cache TTL avec rate limiting
+- **Adapters** : ReputationAdapter, PriceAdapter (pluggables)
 
-## 📖 Documentation
+### Module 2 : Orchestration Layer (Planifié)
+- **Providers** : Intégrations blockchain (Ethers, viem)
+- **Analyzers** : Analyse des données on-chain
+- **Signers** : Gestion des transactions
+- **Workflows** : Automatisations n8n
 
-### Pour les développeurs
+### Module 3 : Frontend (Futur)
+- Dashboard utilisateur
+- Visualisation des données
+- Admin panel
 
-- [Architecture complète](docs/ChainMesh_PRD_v1.2.md)
-- [Rapport de refactoring](contracts/REFACTORING_REPORT.md)
-- [Guide des adapters](contracts/README_ADAPTERS.md) *(à venir)*
+## 📊 Statistiques
 
-### Guides de refactoring
+### Module 1 - Blockchain
+- **123 tests** au total
+- **97.10%** coverage (GenericOracle)
+- **96.36%** coverage (GenericCache)
+- **>80%** coverage (Adapters)
 
-- [Prompt 1/3 : GenericOracle](docs/PROMPT_1_GenericOracle.md)
-- [Prompt 2/3 : GenericCache](docs/PROMPT_2_GenericCache.md)
-- [Prompt 3/3 : Adapters](docs/PROMPT_3_Adapters.md)
-
-## 🔑 Concepts clés
+## 🔑 Concepts Clés
 
 ### Schema Versioning
-
-Chaque adapter définit un schema unique via `schemaHash` :
-
+Chaque adapter définit un schema unique pour supporter différents types de données :
 ```solidity
 bytes32 public constant SCHEMA_HASH = keccak256("ReputationV1");
 ```
 
-Cela permet :
-- Coexistence de multiples types de données
-- Évolution des schemas (V1 → V2)
-- Validation au runtime
-
 ### Generic Storage
-
-Au lieu de structures spécifiques :
-
+Stockage flexible basé sur `bytes` au lieu de structures hardcodées :
 ```solidity
-// ❌ Ancien (hardcodé)
-struct Reputation {
-    uint8 score;
-    bytes32 evidenceHash;
-    uint32 timestamp;
-    bool isValid;
-}
-
-// ✅ Nouveau (générique)
 struct DataEntry {
     bytes32 key;
     bytes32 schemaHash;
@@ -189,9 +110,7 @@ mapping(bytes32 => bytes) public dataValues;
 ```
 
 ### Adapters Stateless
-
-Les adapters sont de simples helpers d'encodage/décodage :
-
+Helpers d'encodage/décodage sans état propre :
 ```solidity
 interface IDataAdapter {
     function getSchemaHash() external pure returns (bytes32);
@@ -199,33 +118,37 @@ interface IDataAdapter {
 }
 ```
 
-## 🛠️ Créer votre propre Adapter
+## 📖 Documentation
 
-```solidity
-contract MyCustomAdapter is IDataAdapter {
-    bytes32 public constant SCHEMA_HASH = keccak256("MyDataV1");
+### Documentation par Module
+- [Module 1 - Blockchain](module1-blockchain/contracts/README.md)
+- [Module 2 - Orchestration](module2-orchestration/README.md) *(à créer)*
 
-    function getSchemaHash() external pure returns (bytes32) {
-        return SCHEMA_HASH;
-    }
+### Documentation Technique
+- [Architecture Module 1](docs/SPEC_Module1_Blockchain.md)
+- [Architecture détaillée](docs/MODULE1_ARCHITECTURE.md)
+- [Rapport de refactoring](module1-blockchain/contracts/REFACTORING_REPORT.md)
 
-    function getDefaultValue() external pure returns (bytes memory) {
-        return abi.encode(/* vos valeurs par défaut */);
-    }
+## 🗺️ Roadmap
 
-    // Vos helpers d'encodage/décodage
-}
-```
+### ✅ Module 1 - Blockchain Layer (Complété)
+- [x] GenericOracle avec CCIP
+- [x] GenericCache avec TTL et rate limiting
+- [x] ReputationAdapter
+- [x] PriceAdapter
+- [x] Tests complets (>80% coverage)
 
-## 📊 Gas Analysis
+### 🚧 Module 2 - Orchestration (En cours)
+- [ ] Structure du projet créée
+- [ ] Configuration n8n workflows
+- [ ] Intégration OpenAI
+- [ ] Webhook endpoints
+- [ ] Tests unitaires et d'intégration
 
-Trade-off accepté : +2-3x gas pour la généricité
-
-| Operation | Ancien | Nouveau | Justification |
-|-----------|--------|---------|---------------|
-| updateData | ~60k | ~171k | CCIP fees ($25) >> gas ($5) |
-| sendResponse | ~40k | ~110k | Architecture > optimisation |
-| requestData | ~90k | ~110k | Minimal impact |
+### 📋 Module 3 - Frontend (Futur)
+- [ ] Dashboard utilisateur
+- [ ] Visualisation des données
+- [ ] Admin panel
 
 ## 🔐 Sécurité
 
@@ -236,24 +159,19 @@ Trade-off accepté : +2-3x gas pour la généricité
 - ✅ Schema validation
 - ✅ Whitelist de chains
 
-## 🗺️ Roadmap
+## 🛠️ Technologies
 
-### Module 1 - Blockchain Layer ✅
-- [x] GenericOracle
-- [x] GenericCache
-- [x] ReputationAdapter
-- [x] PriceAdapter
-- [x] Tests complets (>80% coverage)
+### Module 1
+- Solidity 0.8.20
+- Foundry
+- Chainlink CCIP
+- OpenZeppelin
 
-### Module 2 - Backend (À venir)
-- [ ] n8n workflows
-- [ ] OpenAI integration
-- [ ] Webhook endpoints
-
-### Module 3 - Frontend (À venir)
-- [ ] Dashboard utilisateur
-- [ ] Visualisation des données
-- [ ] Admin panel
+### Module 2 (Planifié)
+- Node.js / TypeScript
+- n8n
+- OpenAI API
+- Ethers.js / viem
 
 ## 📝 License
 
@@ -261,9 +179,9 @@ MIT
 
 ## 👥 Contribution
 
-Les contributions sont les bienvenues ! Consultez le guide des adapters pour ajouter votre propre type de données.
+Les contributions sont les bienvenues ! Consultez la documentation de chaque module pour comprendre l'architecture avant de contribuer.
 
-## 🔗 Liens
+## 🔗 Liens Utiles
 
 - **Documentation CCIP** : https://docs.chain.link/ccip
 - **Foundry Book** : https://book.getfoundry.sh

@@ -32,8 +32,7 @@ contract ReputationAdapterTest is Test {
 
         // Grant updater role
         oracle.grantRole(oracle.UPDATER_ROLE(), updater);
-        oracle.grantRole(oracle.UPDATER_ROLE(), address(repAdapter));
-        oracle.grantRole(oracle.UPDATER_ROLE(), address(priceAdapter));
+        oracle.grantRole(oracle.UPDATER_ROLE(), address(adapter));
 
         // Whitelist Arbitrum
         oracle.whitelistChain(ARBITRUM_CHAIN_SELECTOR);
@@ -243,8 +242,9 @@ contract ReputationAdapterTest is Test {
     // ========== Access Control Tests ==========
 
     function test_UpdateReputation_RequiresUpdaterRole() public {
-        // Non-updater should fail (Oracle enforces access control)
-        vm.prank(alice);
+        // Revoke adapter's role so Oracle will reject the call
+        oracle.revokeRole(oracle.UPDATER_ROLE(), address(adapter));
+
         vm.expectRevert();
         adapter.updateReputation(IGenericOracle(address(oracle)), bob, 50, bytes32(0));
     }
