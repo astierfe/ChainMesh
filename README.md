@@ -5,68 +5,80 @@ Generic cross-chain orchestration infrastructure for AI agents, built on Chainli
 ChainMesh is not an application -- it is a reusable infrastructure layer. Any AI agent can use it to store, query and distribute data across EVM blockchains without dealing with cross-chain messaging complexity. The system is schema-agnostic: adding a new data type (reputation, price, governance, custom) only requires a new adapter and workflow configuration, without modifying the core infrastructure.
 
 ```mermaid
-graph TB
-    subgraph "Module 6 -- SDK & Plugin"
+graph LR
+    %% Styles
+    classDef offchain fill:#f9f,stroke:#333,stroke-width:2px;
+    classDef onchain fill:#bbf,stroke:#333,stroke-width:2px;
+    classDef ai fill:#dfd,stroke:#333,stroke-width:2px;
+    classDef security fill:#fdd,stroke:#333,stroke-width:2px;
+    classDef bridge fill:#fff4dd,stroke:#d4a017,stroke-width:2px;
+
+    subgraph Interface ["Module 6: Access"]
         SDK([chainmesh-sdk])
         Plugin([ElizaOS Plugin])
     end
 
-    subgraph "Module 2 -- Orchestration"
+    subgraph Core ["Module 2: Orchestration"]
         API[API Gateway<br/>POST /api/query]
-        Listener[CCIP Event Listener<br/>Poll 30s]
-        Orchestrator[Generic Orchestrator<br/>n8n + TypeScript]
+        Listener[CCIP Event Listener]
+        Orchestrator{{"Generic Orchestrator<br/>(n8n + TS)"}}
     end
 
-    subgraph "Module 5 -- Data Layer"
-        Goldsky[Goldsky<br/>GraphQL Indexer]
-        Alchemy[Alchemy<br/>RPC Fallback]
+    subgraph Data ["Module 5: Data Layer"]
+        Goldsky[(Goldsky GraphQL)]
+        Alchemy[(Alchemy RPC)]
     end
 
-    subgraph "Module 3 -- AI Engine"
-        Claude[Claude API<br/>Behavioral Analysis]
-        Rules[Rules Engine<br/>Deterministic Scoring]
-        Hybrid[Hybrid Scorer<br/>AI x0.6 + Rules x0.4]
+    subgraph AIEngine ["Module 3: AI Engine"]
+        direction TB
+        Claude[Claude API]
+        Rules[Rules Engine]
+        Hybrid[Hybrid Scorer]
+        Claude & Rules --> Hybrid
     end
 
-    subgraph "Module 4 -- Security"
-        Lit[Lit Protocol<br/>MPC Signing]
-        DevWallet[Dev Wallet<br/>Testnet Fallback]
+    subgraph Security ["Module 4: Security"]
+        Lit{{Lit Protocol MPC}}
+        DevWallet[Dev Wallet]
     end
 
-    subgraph "Module 1 -- Smart Contracts"
-        Oracle[GenericOracle<br/>Sepolia]
-        Cache1[GenericCache<br/>Arbitrum]
-        Cache2[GenericCache<br/>Base]
-        Cache3[GenericCache<br/>Optimism]
-        Adapters[Adapters<br/>Reputation / Price / ...]
+    subgraph OnChain ["Module 1: Smart Contracts"]
+        direction TB
+        Oracle[GenericOracle <br/>Sepolia]
+        subgraph Caches ["L2 Caches"]
+            C1[Arbitrum]
+            C2[Base]
+            C3[Optimism]
+        end
+        Adapters[Adapters]
     end
 
-    subgraph "Cross-Chain"
-        CCIP{{Chainlink CCIP}}
+    subgraph CrossChain ["Messaging"]
+        CCIP((Chainlink CCIP))
     end
 
-    SDK --> API
-    Plugin --> API
+    %% Flow
+    SDK & Plugin --> API
     API --> Orchestrator
-    Listener --> Orchestrator
+    Listener -.-> Orchestrator
 
-    Orchestrator --> Goldsky
-    Orchestrator --> Alchemy
-    Orchestrator --> Claude
-    Orchestrator --> Rules
-    Claude --> Hybrid
-    Rules --> Hybrid
-    Orchestrator --> Lit
-    Orchestrator --> DevWallet
+    Orchestrator --> Goldsky & Alchemy
+    Orchestrator --> AIEngine
+    Orchestrator --> Security
 
-    Lit --> Oracle
+    Security --> Oracle
     Adapters --> Oracle
-    Oracle <--> CCIP
-    CCIP <--> Cache1
-    CCIP <--> Cache2
-    CCIP <--> Cache3
+    
+    Oracle <==> CCIP
+    CCIP <==> Caches
+    Caches -.->|emit Event| Listener
 
-    Cache1 -.->|emit QueryReceived| Listener
+    %% Apply Classes
+    class SDK,Plugin,API,Orchestrator,Listener offchain;
+    class Oracle,C1,C2,C3,Adapters onchain;
+    class Claude,Rules,Hybrid ai;
+    class Lit,DevWallet security;
+    class CCIP bridge;
 ```
 
 ---
