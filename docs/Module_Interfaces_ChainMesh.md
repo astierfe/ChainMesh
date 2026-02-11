@@ -1,599 +1,437 @@
-# ChainMesh - Interfaces de Modules (Version 1.0)
+# ChainMesh - Module Interfaces (Version 2.0)
 
-**Date:** 31 janvier 2026  
-**Objectif:** Définir les frontières strictes entre modules pour développement isolé
+**Date:** 11 February 2026
+**Purpose:** Strict boundaries between the 6 modules for isolated development.
 
-**Règle d'Or:** Un agent travaillant sur un module ne doit JAMAIS modifier ou dépendre de l'implémentation interne d'un autre module, uniquement de son interface définie ici.
+ChainMesh is schema-agnostic. All interfaces below use generic types (`bytes32 key`, `bytes32 schemaHash`, `bytes value`). Reputation and Price are two example adapters, but any data type can be added without modifying any core interface. The only domain-specific code lives in adapters (on-chain) and analyzers (off-chain).
 
 ---
 
-## MODULE 1: Smart Contracts (Blockchain Layer)
+## MODULE 1: Smart Contracts
 
-**Technologie:** Solidity 0.8.20+ / Foundry  
-**Localisation:** `contracts/src/`  
-**Responsable:** Foundry agent
+**Technology:** Solidity 0.8.20, Foundry, Chainlink CCIP, OpenZeppelin
+**Location:** `module1-blockchain/contracts/src/`
 
-### Interface d'Entrée
+### 1.1 GenericOracle (Sepolia)
 
-**1.1 Requête de Réputation (depuis Cache contracts)**
+Stores key-value pairs identified by `bytes32 key` and `bytes32 schemaHash`. Receives CCIP queries from consumer chains, emits events for the off-chain orchestrator, and sends CCIP responses back.
+
+**Data model:**
+
 ```solidity
-// Event émis par ChainMeshCache (consumer chain)
-// Reçu via CCIP par ChainMeshOracle
-event RequestSent(
-    bytes32 indexed messageId,
-    address indexed wallet,
-    address requester
-);
+struct DataEntry {
+    bytes32 key;
+    bytes32 schemaHash;
+    uint32  timestamp;
+    bool    isValid;
+}
+// dataValues[key] stored separately (gas optimization)
 
-// Données CCIP message
-struct QueryMessage {
-    address wallet;      // Wallet à analyser
-    address requester;   // Qui a fait la requête
+struct QueryRequest {
+    address requester;
+    uint64  sourceChain;
+    uint32  requestedAt;
+    bool    processed;
 }
 ```
 
-**1.2 Mise à Jour de Réputation (depuis n8n via Lit)**
+**External functions (UPDATER_ROLE):**
+
 ```solidity
-// Fonction appelée par n8n après analyse AI
-function updateReputation(
-    address wallet,
-    uint8 score,           // 0-100
-    bytes32 evidenceHash   // IPFS CID v1 (SHA-256)
-) external onlyRole(UPDATER_ROLE);
+function updateData(bytes32 key, bytes memory value, bytes32 schemaHash) external;
+function sendResponse(bytes32 messageId, bytes32 key) external returns (bytes32);
 ```
+
+**View functions (public):**
+
+```solidity
+function getData(bytes32 key) external view
+    returns (bytes memory value, uint32 timestamp, bytes32 schemaHash, bool isValid);
+```
+
+**Admin functions (DEFAULT_ADMIN_ROLE):**
+
+```solidity
+function whitelistChain(uint64 chainSelector) external;
+function removeChainFromWhitelist(uint64 chainSelector) external;
+function registerSchema(bytes32 schemaHash) external;
+function setStrictMode(bool enabled) external;
+function setDefaultValue(bytes32 schemaHash, bytes memory defaultValue) external;
+function invalidateData(bytes32 key) external;
+function withdraw(address payable to, uint256 amount) external;
+```
+
+**Events:**
+
+```solidity
+event QueryReceived(bytes32 indexed messageId, bytes32 indexed key, bytes32 indexed schemaHash, uint64 sourceChain, address requester);
+event DataUpdated(bytes32 indexed key, bytes32 indexed schemaHash, uint256 timestamp);
+event ResponseSent(bytes32 indexed messageId, uint64 destinationChain, bytes32 key, bytes32 schemaHash);
+event SchemaRegistered(bytes32 indexed schemaHash);
+event DataInvalidated(bytes32 indexed key);
+```
+
+**Consumed by:** Module 2 (orchestrator calls `updateData` + `sendResponse`), Adapters (call `updateData` + `getData`)
+**CCIP receiver:** `_ccipReceive` validates whitelisted chain, checks replay protection, stores `QueryRequest`, emits `QueryReceived`.
 
 ---
 
-### Interface de Sortie
+### 1.2 GenericCache (Arbitrum, Base, Optimism)
 
-**1.3 Event Query Reçue**
-```solidity
-event QueryReceived(
-    bytes32 indexed messageId,
-    address indexed wallet,
-    uint64 sourceChain,
-    address requester
-);
-```
-**Consommateur:** n8n (webhook trigger)
+TTL cache on consumer chains. On cache miss or stale data, sends a CCIP request to the Oracle.
 
-**1.4 Réponse CCIP**
+**Constants:** `CACHE_TTL = 24 hours`, `MIN_REQUEST_INTERVAL = 1 hour`
+**Immutables:** `ORACLE_ADDRESS`, `ORACLE_CHAIN_SELECTOR`
+
+**Data model:**
+
 ```solidity
-// Message CCIP envoyé vers consumer chain
-struct ResponseMessage {
-    address wallet;
-    uint8 score;
-    uint32 timestamp;
-    bytes32 evidenceHash;
+struct CachedData {
+    bytes32 key;
+    bytes   value;
+    uint32  timestamp;
+    uint256 expiryTime;
+    bytes32 schemaHash;
+    bool    isValid;
 }
-
-event ResponseSent(
-    bytes32 indexed messageId,
-    uint64 destinationChain,
-    address wallet,
-    uint8 score
-);
 ```
-**Consommateur:** ChainMeshCache (consumer chain)
+
+**External functions:**
+
+```solidity
+function getData(bytes32 key) external view
+    returns (bytes memory value, bool isFromCache, bool needsUpdate);
+
+function requestData(bytes32 key, bytes32 schemaHash) external payable
+    returns (bytes32 messageId);
+
+function setDefaultValue(bytes32 schemaHash, bytes memory value) external; // ADMIN
+function invalidateCache(bytes32 key) external;                           // ADMIN
+```
+
+**Events:**
+
+```solidity
+event DataQueried(bytes32 indexed key, bytes32 indexed schemaHash, address indexed requester, bytes32 messageId);
+event DataCached(bytes32 indexed key, bytes32 indexed schemaHash, uint256 expiryTime);
+event CacheHit(bytes32 indexed key, bytes32 schemaHash, bool isFresh);
+event CacheMiss(bytes32 indexed key, bytes32 schemaHash);
+```
+
+**Consumed by:** Module 6 (SDK reads `getData`, calls `requestData`), end users.
 
 ---
 
-### Dépendances Externes
-- Chainlink CCIP Router (immutable, fourni par Chainlink)
-- OpenZeppelin AccessControl, ReentrancyGuard
+### 1.3 Adapter Pattern (IDataAdapter)
 
-### Isolation
-✅ **Complète** - Aucune connaissance de n8n, AI, ou Data Layer requis
+Adapters are stateless encoder/decoders. They translate between domain-specific types and the generic `bytes` format used by Oracle/Cache.
+
+```solidity
+interface IDataAdapter {
+    function getSchemaHash() external pure returns (bytes32);
+    function getDefaultValue() external pure returns (bytes memory);
+}
+```
+
+**Existing adapters:**
+
+| Adapter | Schema | Key derivation | Encoded format |
+|---|---|---|---|
+| ReputationAdapter | `keccak256("ReputationV1")` | `keccak256(abi.encodePacked(wallet, "reputation"))` | `abi.encode(uint8 score, bytes32 evidenceHash)` |
+| PriceAdapter | `keccak256("PriceV1")` | `keccak256(abi.encodePacked(symbol, "price"))` | `abi.encode(uint256 value, uint8 decimals)` |
+
+**Adding a new adapter:** Implement `IDataAdapter`, define `getKey()`, `encode()`, `decode()`, and a convenience function that calls `oracle.updateData(key, encoded, schemaHash)`. No change to Oracle or Cache.
 
 ---
 
-## MODULE 2: Orchestration (n8n Layer)
+## MODULE 2: Orchestration
 
-**Technologie:** n8n (Docker), Node.js  
-**Localisation:** n8n workflows (self-hosted)  
-**Responsable:** n8n agent
+**Technology:** TypeScript strict, n8n, Vitest, Zod v4, ethers v6, Winston
+**Location:** `module2-orchestration/src/`
 
-### Interface d'Entrée
+### 2.1 Entry Point: API Gateway
 
-**2.1 Webhook HTTP (API Gateway)**
-```json
+```
 POST /api/query
+Content-Type: application/json
+```
+
+**Request body (GenericQueryRequest):**
+
+```typescript
 {
-  "address": "0x742d35Cc...",
-  "chains": ["sepolia", "arbitrum", "base"],
-  "dataType": "reputation",
-  "includeAI": true
+  key: string;           // bytes32 (0x + 64 hex chars)
+  schemaHash: string;    // bytes32
+  chains: string[];      // ['sepolia', 'arbitrum', 'base', 'optimism'] (min 1)
+  includeAnalysis: boolean; // default true
+  options?: {
+    timeoutMs?: number;     // 10000-300000, default 180000
+    fallbackProviders?: boolean; // default true
+  };
+  metadata?: {              // present when triggered by CCIP event
+    messageId?: string;     // bytes32
+    sourceChain?: string;
+    requester?: string;     // address
+  };
 }
 ```
-**Déclencheur:** SDK, ElizaOS Plugin, dApps externes
 
-**2.2 Blockchain Event (Query Reçue)**
-```json
+**Response:**
+
+```typescript
 {
-  "event": "QueryReceived",
-  "messageId": "0xABC123...",
-  "wallet": "0x742d35Cc...",
-  "sourceChain": "3478487238524512106",
-  "requester": "0xDEF456..."
-}
-```
-**Déclencheur:** Event listener (webhook ou polling)
-
----
-
-### Interface de Sortie
-
-**2.3 Requête Data Provider**
-```typescript
-interface DataProviderRequest {
-  address: string;           // EIP-55 checksum
-  chains: string[];          // ['sepolia', 'arbitrum', ...]
-  includeTransactions: boolean;
-  includeDeFi: boolean;
-}
-```
-**Consommateur:** Module 5 (Data Layer)
-
-**2.4 Requête Scoring Engine**
-```typescript
-interface ScoringRequest {
-  data: ChainMeshData;      // Format ChainMesh Schema v1
-  includeAI: boolean;
-}
-```
-**Consommateur:** Module 3 (AI Engine)
-
-**2.5 Requête Signature**
-```typescript
-interface SignatureRequest {
-  payload: {
-    wallet: string;
-    score: number;
-    timestamp: number;
-    evidenceHash: string;
+  executionId: string;
+  status: 'success' | 'error';
+  result?: {
+    data: Record<string, unknown>;
+    analysis?: { result: unknown; confidence: number; reasoning: string };
+    signature?: { signature: string; pkpPublicKey: string };
   };
-  pkpPublicKey: string;
+  error?: { type: string; message: string };
 }
 ```
-**Consommateur:** Module 4 (Security - Lit Protocol)
 
-**2.6 Transaction Blockchain**
+### 2.2 Entry Point: CCIP Event Listener
+
+Polls `QueryReceived` events from GenericOracle every 30 seconds. Checks idempotency (PostgreSQL `processed_events` table), builds a `GenericQueryRequest` from the event data, and calls the same orchestrator pipeline. When `metadata.messageId` is present, the pipeline triggers `sendResponse` at the end.
+
+### 2.3 Pipeline Steps
+
+The `WorkflowOrchestrator.execute()` runs this sequence:
+
+1. **Validate** -- Zod schema validation (`GenericQueryRequest`)
+2. **Rate limit** -- 1 request/key/hour (PostgreSQL `rate_limits` table)
+3. **Fetch data** -- `ProviderFactory.queryWithFallback()` (Module 5)
+4. **Analyze** -- `HybridAnalyzer.analyze()` if `includeAnalysis=true` (Module 3)
+5. **Encode** -- JSON to hex (`ethers.toUtf8Bytes` + `ethers.hexlify`)
+6. **Sign** -- `SignerFactory.signWithFallback()` (Module 4)
+7. **Oracle update** -- Call `oracle.updateData(key, value, schemaHash)` on-chain
+8. **CCIP response** -- If `metadata.messageId` present, call `oracle.sendResponse(messageId, key)`
+
+**Consumed by:** n8n workflows (API_Gateway.json, CCIP_EventListener.json, GenericOrchestrator.json)
+
+---
+
+## MODULE 3: AI Engine
+
+**Technology:** Claude API (Anthropic), deterministic rules engine
+**Location:** `module2-orchestration/src/analyzers/`
+
+### 3.1 Input (from Module 2)
+
 ```typescript
-// Appel à ChainMeshOracle.updateReputation()
-interface BlockchainUpdate {
-  contractAddress: string;
-  functionName: 'updateReputation';
-  args: [wallet, score, evidenceHash];
-  signature: string;          // Fourni par Lit
-}
+// HybridAnalyzer.analyze(data, schemaHash)
+data: Record<string, unknown>;   // raw data from providers
+schemaHash: string;              // determines which analysis to apply
 ```
-**Consommateur:** Module 1 (Blockchain)
 
----
+The analyzer is schema-aware: it uses the `schemaHash` to determine which analysis logic to apply (reputation scoring, price validation, etc.). New analysis types can be added by extending the router in `HybridAnalyzer`.
 
-### Contrat de Données
-**Format standard:** ChainMesh Schema v1 (JSON)
-- Produit par: Module 2 (après agrégation Data Layer)
-- Consommé par: Module 3 (AI Engine)
-- Schéma: `schemas/chainmesh-data-v1.schema.json`
+### 3.2 Output (AnalyzerOutput)
 
----
-
-### Isolation
-⚠️ **Moyenne** - Dépend de:
-- Interface `IDataProvider` (Module 5)
-- Interface `IScoringEngine` (Module 3)
-- Interface `ILitSigner` (Module 4)
-
-**Point d'amélioration:** Abstraire ces dépendances
-
----
-
-## MODULE 3: AI Engine (Claude API)
-
-**Technologie:** Anthropic Claude API (Sonnet 4)  
-**Localisation:** n8n Code Nodes, ou module TypeScript dédié  
-**Responsable:** AI agent
-
-### Interface d'Entrée
-
-**3.1 Données Normalisées**
 ```typescript
-interface ChainMeshData {
-  version: "1.0";
-  wallet: {
-    address: string;
-    ens?: string;
-    labels: string[];
-  };
-  activity: {
-    chains: ChainActivity[];
-  };
-  defi: {
-    protocols: DeFiInteraction[];
-    liquidations: Liquidation[];
+{
+  result: unknown;        // schema-specific (e.g. { score: 75, tier: 'standard' })
+  confidence: number;     // 0.0 - 1.0
+  reasoning: string;      // human-readable explanation
+  metadata: {
+    model?: string;       // 'claude-sonnet-4-5-20250929' or 'rules-engine'
+    method?: string;      // 'hybrid' | 'ai-only' | 'rules-only'
+    processingTime: number; // ms
+    tokensUsed?: number;
   };
 }
 ```
-**Format complet:** Voir `schemas/chainmesh-data-v1.schema.json`  
-**Producteur:** Module 2 (n8n après normalisation Data Layer)
 
----
+### 3.3 Internal Architecture
 
-### Interface de Sortie
+`HybridAnalyzer` combines two engines: `ClaudeAnalyzer` (AI, weight 0.6) and `RulesAnalyzer` (deterministic, weight 0.4). If AI and rules disagree strongly (delta > 30 points), confidence is lowered. If Claude is unavailable, falls back to rules-only transparently.
 
-**3.2 Résultat de Scoring**
-```typescript
-interface ScoringResult {
-  score: number;              // 0-100 (integer)
-  tier: 'prime' | 'standard' | 'risky';
-  confidence: number;         // 0.0-1.0 (float)
-  reasoning: string;          // Max 500 caractères
-  patterns: {
-    isBot: boolean;
-    botConfidence: number;    // 0.0-1.0
-    washTrading: boolean;
-  };
-  riskFlags: string[];
-  analyzedAt: string;         // ISO 8601
-}
-```
-**Consommateur:** Module 2 (n8n Validation Layer)
-
----
-
-### Isolation
-✅ **Excellente** - Aucune connaissance de:
-- Blockchain (ne reçoit que JSON)
-- CCIP (transparent pour l'IA)
-- Lit Protocol (signature post-analyse)
-
-**Note:** Le prompt Claude est un détail d'implémentation interne à ce module. n8n ne doit PAS construire le prompt.
+**Isolation:** Receives only JSON data + schemaHash. No knowledge of blockchain, CCIP, or signing.
 
 ---
 
 ## MODULE 4: Security (Lit Protocol MPC)
 
-**Technologie:** Lit Protocol PKP (Datil-Test)  
-**Localisation:** n8n Sub-Workflow ou SDK wrapper  
-**Responsable:** Security agent
+**Technology:** Lit Protocol PKP (Datil-Test), ethers v6
+**Location:** `module2-orchestration/src/signers/`
 
-### Interface d'Entrée
+### 4.1 Input (SignablePayload)
 
-**4.1 Payload à Signer**
 ```typescript
-interface SignablePayload {
-  wallet: string;             // Address EIP-55
-  score: number;              // 0-100
-  timestamp: number;          // Unix timestamp
-  evidenceHash: string;       // IPFS CID v1
-}
-```
-**Format sérialisé:** ABI-encode (Solidity compatible)
-
-**4.2 Authentification**
-```typescript
-interface AuthSignature {
-  sig: string;                // Session signature
-  derivedVia: "web3.eth.personal.sign";
-  signedMessage: string;
-  address: string;
-}
+// SignerFactory.signWithFallback(key, value, schemaHash, timestamp)
+key: string;           // bytes32
+value: string;         // hex-encoded data
+schemaHash: string;    // bytes32
+timestamp: number;     // Unix timestamp
 ```
 
----
+The payload is ABI-encoded and hashed before signing. The signer does not know what the data represents.
 
-### Interface de Sortie
+### 4.2 Output (SignerOutput)
 
-**4.3 Signature MPC**
 ```typescript
-interface MPCSignature {
-  signature: string;          // Signature ECDSA (r,s,v)
-  signingTime: number;        // Latency in ms
-  nodeCount: number;          // Nombre de nodes MPC (ex: 67/100)
-}
-```
-**Consommateur:** Module 2 (n8n pour broadcast tx)
-
----
-
-### Dépendances Externes
-- Lit Protocol Network (100 nodes)
-- Session signature (générée par n8n une fois par session)
-
----
-
-### Isolation
-✅ **Excellente** - Reçoit uniquement:
-- Payload structuré (TypeScript interface)
-- Auth signature
-
-Ne connaît rien de:
-- Source des données (AI, Blockchain, etc.)
-- Utilisation finale (signature pour quoi?)
-
----
-
-## MODULE 5: Data Layer (Goldsky + Fallbacks)
-
-**Technologie:** Goldsky GraphQL, Alchemy RPC, Etherscan API  
-**Localisation:** n8n Sub-Workflows ou module TypeScript  
-**Responsable:** Data agent
-
-### Interface d'Entrée
-
-**5.1 Requête Multi-Chain**
-```typescript
-interface DataRequest {
-  address: string;            // EIP-55 checksum
-  chains: ChainName[];        // ['sepolia', 'arbitrum', 'base']
-  dataTypes: DataType[];      // ['transactions', 'defi', 'nfts']
-  timeRange?: {
-    from: number;             // Unix timestamp
-    to: number;
-  };
-}
-
-type ChainName = 'sepolia' | 'arbitrum' | 'base' | 'optimism' | 'polygon';
-type DataType = 'transactions' | 'defi' | 'nfts' | 'balances';
-```
-**Producteur:** Module 2 (n8n Orchestrator)
-
----
-
-### Interface de Sortie
-
-**5.2 Données Normalisées (ChainMesh Schema v1)**
-```typescript
-interface ChainMeshData {
-  version: "1.0";
-  wallet: WalletInfo;
-  activity: ActivityData;
-  defi: DeFiData;
-  nfts?: NFTData;           // Optional
-}
-```
-**Format complet:** `schemas/chainmesh-data-v1.schema.json`  
-**Consommateur:** Module 3 (AI Engine)
-
-**Validation:** JSON Schema automatique
-
----
-
-### Fallback Strategy
-
-**Providers (ordre de priorité):**
-1. Goldsky (primary) - Latency: ~800ms
-2. Alchemy RPC (fallback 1) - Latency: ~1.5s
-3. Etherscan API (fallback 2) - Latency: ~3s
-4. Public RPC (fallback 3) - Latency: ~5s
-
-**Circuit Breaker:**
-- 3 failures → Skip provider (1 min cooldown)
-- Automatic recovery après cooldown
-
----
-
-### Isolation
-⚠️ **Moyenne** - Doit connaître:
-- ChainMesh Schema v1 (contrat de données)
-
-Ne connaît PAS:
-- Utilisation finale (AI, Blockchain, etc.)
-- Logique de scoring
-
-**Point d'amélioration:** Interface `IDataProvider` abstraite
-
----
-
-## MODULE 6: SDK & Plugin (Developer Interface)
-
-**Technologie:** TypeScript (npm), ElizaOS Framework  
-**Localisation:** `packages/chainmesh-sdk/`, `packages/elizaos-plugin/`  
-**Responsable:** SDK agent
-
-### Interface d'Entrée
-
-**6.1 Configuration**
-```typescript
-interface ChainMeshConfig {
-  chains: ChainConfig[];
-  defaultChain: string;
-  goldsky?: {
-    enabled: boolean;
-    endpoint: string;
-  };
-}
-```
-
-**6.2 Developer API Calls**
-```typescript
-// Méthode principale
-async getReputation(address: string): Promise<ReputationResult>
-
-// Méthode directe (bypass cache)
-async queryMultiChain(
-  address: string, 
-  options?: QueryOptions
-): Promise<ReputationResult>
-
-// Méthode CCIP (async)
-async requestReputation(address: string): Promise<RequestID>
-```
-
----
-
-### Interface de Sortie
-
-**6.3 Résultat Unifié**
-```typescript
-interface ReputationResult {
-  address: string;
-  score: number;              // 0-100
-  tier: string;               // 'prime' | 'standard' | 'risky'
-  confidence: number;         // 0.0-1.0
-  isFromCache: boolean;
-  timestamp: string;          // ISO 8601
-  expiresAt?: string;         // Si cached
-}
-```
-
-**6.4 ElizaOS Actions**
-```typescript
-// Action: GET_REPUTATION
 {
-  name: 'GET_REPUTATION',
-  similes: ['check reputation', 'get wallet score'],
-  handler: async (runtime, message) => ReputationResult
+  signature: string;     // ECDSA signature (0x + 130 hex chars = 65 bytes)
+  signingTime: number;   // latency in ms
+  pkpPublicKey: string;  // public key of the PKP that signed
 }
 ```
 
----
+### 4.3 Internal Architecture
 
-### Dépendances Externes
-- ethers.js v6 (blockchain interaction)
-- ChainMesh smart contracts (ABI)
+`SignerFactory` tries `LitSigner` first (MPC, ~100 nodes, 67 threshold, ~300ms). If Lit is unavailable and `ENVIRONMENT=testnet`, falls back to `DevWalletSigner` (local ethers.Wallet). DevWallet fallback is disabled in production.
 
----
-
-### Isolation
-✅ **Bonne** - Utilise uniquement:
-- Contract ABI (interface publique)
-- RPC endpoints (standard)
-
-⚠️ **Amélioration possible:** Ne pas assumer `DEFAULT_SCORE = 60`
+**Isolation:** Receives only raw data to sign. No knowledge of data source, analysis results, or blockchain destination.
 
 ---
 
-## Schéma Global des Interfaces
+## MODULE 5: Data Layer
+
+**Technology:** Goldsky (GraphQL), Alchemy (RPC + SDK), ethers v6
+**Location:** `module2-orchestration/src/providers/`
+
+### 5.1 Input (from Module 2)
+
+```typescript
+// ProviderFactory.queryWithFallback(key, chains, schemaHash)
+key: string;           // bytes32
+chains: string[];      // ['sepolia', 'arbitrum', ...]
+schemaHash: string;    // bytes32
+```
+
+### 5.2 Output (DataProviderOutput)
+
+```typescript
+{
+  data: Record<string, unknown>;  // aggregated multi-chain data
+  metadata: {
+    chains: string[];       // chains actually queried
+    timestamp: string;      // ISO 8601
+    provider: string;       // 'goldsky' | 'alchemy'
+    queryDuration: number;  // ms
+    partialData?: boolean;  // true if some chains failed
+    successRate?: number;   // 0.0 - 1.0
+    warnings?: string[];
+  };
+}
+```
+
+### 5.3 Fallback Strategy
+
+`ProviderFactory` maintains a list of providers with circuit breakers. For each chain, it tries providers in order (Goldsky primary, Alchemy fallback). Each provider has a `CircuitBreaker` (3 failures = 60s cooldown) and `RetryPolicy` (3 attempts, exponential backoff 1s/2s/4s). If fewer than 50% of chains succeed, the query fails.
+
+**Isolation:** Receives key + chains + schemaHash. Returns normalized data. No knowledge of analysis, signing, or on-chain destination.
+
+---
+
+## MODULE 6: SDK & Plugin (Planned)
+
+**Technology:** TypeScript (npm), ElizaOS Framework
+**Location:** `module6-sdk/` (to be created)
+
+### 6.1 SDK Public API (proposed)
+
+```typescript
+interface ChainMeshSDK {
+  // Cache-first read: calls GenericCache.getData() on-chain
+  getData(key: string, chain: string): Promise<{
+    value: bytes;
+    isFromCache: boolean;
+    needsUpdate: boolean;
+  }>;
+
+  // Trigger CCIP request: calls GenericCache.requestData()
+  requestData(key: string, schemaHash: string, chain: string): Promise<{
+    messageId: string;
+  }>;
+
+  // API Gateway query: calls POST /api/query (Module 2)
+  query(request: {
+    key: string;
+    schemaHash: string;
+    chains: string[];
+    includeAnalysis?: boolean;
+  }): Promise<QueryResult>;
+}
+```
+
+The SDK wraps both on-chain reads (via ethers.js + GenericCache ABI) and off-chain queries (via HTTP to the API Gateway). The developer chooses the strategy: cache-first (fast, on-chain), API-first (fresh, off-chain), or hybrid.
+
+### 6.2 Adapter Helpers (proposed)
+
+The SDK should also provide adapter-specific helpers that encode/decode domain types:
+
+```typescript
+// Mirrors the on-chain ReputationAdapter
+const reputation = chainmesh.adapters.reputation;
+const key = reputation.getKey(walletAddress);    // keccak256(wallet + "reputation")
+const { score, evidenceHash } = reputation.decode(rawBytes);
+
+// Mirrors the on-chain PriceAdapter
+const price = chainmesh.adapters.price;
+const key = price.getKey("ETH");                 // keccak256("ETH" + "price")
+const { value, decimals } = price.decode(rawBytes);
+```
+
+### 6.3 ElizaOS Plugin (proposed)
+
+```typescript
+// Actions available to AI agents
+QUERY_DATA:      "query chainmesh for [key] on [chain]"
+CHECK_CACHE:     "check if [key] is cached on [chain]"
+REQUEST_UPDATE:  "request fresh data for [key] on [chain]"
+```
+
+Not limited to reputation or price -- any adapter registered in ChainMesh is queryable. The plugin resolves the schemaHash from a human-readable adapter name.
+
+**Isolation:** Depends only on GenericCache ABI (on-chain reads) and API Gateway HTTP interface (off-chain queries). No knowledge of orchestration internals, AI engine, signing, or data providers.
+
+---
+
+## Cross-Module Data Flow
 
 ```mermaid
 graph TB
-    subgraph "MODULE 6: SDK & Plugin"
+    subgraph "MODULE 6: SDK"
         SDK[chainmesh-sdk]
-        Plugin[elizaos-plugin]
     end
-    
+
     subgraph "MODULE 1: Blockchain"
-        Oracle[ChainMeshOracle]
-        Cache[ChainMeshCache]
+        Oracle["GenericOracle<br/>updateData(key, value, schemaHash)"]
+        Cache["GenericCache<br/>getData(key) / requestData(key, schemaHash)"]
     end
-    
+
     subgraph "MODULE 2: Orchestration"
-        N8N[n8n Workflows]
-        Gateway[API Gateway]
+        Gateway["API Gateway<br/>POST /api/query {key, schemaHash, chains}"]
+        Pipeline["WorkflowOrchestrator<br/>validate → rate limit → fetch → analyze → sign → update"]
     end
-    
-    subgraph "MODULE 5: Data Layer"
-        Goldsky[Goldsky Provider]
-        Schema[ChainMesh Schema v1]
+
+    subgraph "MODULE 5: Data"
+        Providers["ProviderFactory<br/>queryWithFallback(key, chains, schemaHash)"]
     end
-    
-    subgraph "MODULE 3: AI Engine"
-        Claude[Claude API]
-        Validation[Validation Layer]
+
+    subgraph "MODULE 3: AI"
+        Analyzer["HybridAnalyzer<br/>analyze(data, schemaHash)"]
     end
-    
+
     subgraph "MODULE 4: Security"
-        Lit[Lit Protocol MPC]
+        Signer["SignerFactory<br/>signWithFallback(key, value, schemaHash, ts)"]
     end
-    
-    SDK -->|Contract ABI| Cache
-    Plugin -->|SDK API| SDK
-    
-    Cache -->|CCIP Event| Oracle
-    Oracle -->|Event: QueryReceived| Gateway
-    
-    Gateway -->|HTTP JSON| N8N
-    N8N -->|DataRequest| Goldsky
-    Goldsky -->|ChainMesh Schema v1| N8N
-    
-    N8N -->|ChainMesh Schema v1| Claude
-    Claude -->|ScoringResult| Validation
-    Validation -->|Validated Score| N8N
-    
-    N8N -->|SignablePayload| Lit
-    Lit -->|MPCSignature| N8N
-    
-    N8N -->|updateReputation(signed)| Oracle
-    Oracle -->|CCIP Response| Cache
-    
-    style Schema fill:#FFD700
-    style Oracle fill:#87CEEB
-    style Claude fill:#90EE90
-    style Lit fill:#FF69B4
+
+    SDK -->|"ABI call"| Cache
+    SDK -->|"HTTP POST"| Gateway
+    Gateway --> Pipeline
+    Pipeline --> Providers
+    Pipeline --> Analyzer
+    Pipeline --> Signer
+    Signer -->|"updateData + sendResponse"| Oracle
+    Oracle <-->|"CCIP"| Cache
+
+    style Oracle fill:#bbf
+    style Cache fill:#bbf
+    style Analyzer fill:#dfd
+    style Signer fill:#fdd
 ```
 
----
-
-## Contrats de Données Critiques
-
-### 1. ChainMesh Schema v1
-- **Fichier:** `schemas/chainmesh-data-v1.schema.json`
-- **Producteur:** Module 5 (Data Layer)
-- **Consommateur:** Module 3 (AI Engine)
-- **Validation:** JSON Schema Validator
-- **Statut:** ❌ **À CRÉER (P0)**
-
-### 2. ScoringResult Interface
-- **Fichier:** `types/scoring.ts`
-- **Producteur:** Module 3 (AI Engine)
-- **Consommateur:** Module 2 (n8n), Module 4 (Lit)
-- **Validation:** TypeScript compiler
-- **Statut:** ⚠️ **Partiellement défini (P1)**
-
-### 3. Contract ABI
-- **Fichier:** Généré par Foundry (`out/`)
-- **Producteur:** Module 1 (Blockchain)
-- **Consommateur:** Module 6 (SDK)
-- **Validation:** Solidity compiler
-- **Statut:** ✅ **Auto-généré**
-
----
-
-## Règles de Développement Isolé
-
-### Pour Agents Claude-code
-
-**Agent travaillant sur Module 1 (Blockchain):**
-- ✅ Lire: Ce fichier (interfaces), Contract ABI
-- ❌ Ne PAS lire: n8n code, AI code, Data code
-
-**Agent travaillant sur Module 2 (n8n):**
-- ✅ Lire: Ce fichier, ChainMesh Schema v1, ScoringResult types
-- ❌ Ne PAS lire: Implémentation interne Claude, Lit, Goldsky
-- ⚠️ Utiliser: Abstractions `IDataProvider`, `IScoringEngine`
-
-**Agent travaillant sur Module 3 (AI):**
-- ✅ Lire: ChainMesh Schema v1, ScoringResult interface
-- ❌ Ne PAS lire: n8n code, Blockchain code
-- ✅ Focus: Analyse de données JSON → Output JSON
-
-**Agent travaillant sur Module 5 (Data):**
-- ✅ Lire: ChainMesh Schema v1, DataRequest interface
-- ❌ Ne PAS lire: AI code, Blockchain code
-- ✅ Focus: Providers → Schema normalisé
-
----
-
-## Prochaines Actions (Par Priorité)
-
-**P0 - Bloquant:**
-1. Créer `schemas/chainmesh-data-v1.schema.json`
-2. Documenter format `evidenceHash` (IPFS CID v1, SHA-256)
-3. Finaliser `Claude.md` avec ces interfaces
-
-**P1 - Important:**
-4. Créer `types/scoring.ts` (ScoringResult strict)
-5. Créer `types/data-provider.ts` (IDataProvider interface)
-6. Extraire prompt Claude dans fichier séparé
-
-**P2 - Nice to have:**
-7. Implémenter Circuit Breaker abstraction
-8. Versioning automatique des schemas (v1.0, v1.1)
-
----
-
-**Version:** 1.0  
-**Dernière Mise à Jour:** 31 janvier 2026  
-**Prochaine Révision:** Semaine 4 (après Phase 1)
+Every arrow carries only generic types: `bytes32 key`, `bytes32 schemaHash`, `bytes value`, `string[] chains`. Domain-specific encoding/decoding happens exclusively in adapters (on-chain) and analyzer routers (off-chain).

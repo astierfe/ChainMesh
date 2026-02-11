@@ -1,0 +1,24 @@
+{
+  "name": "@chainmesh/elizaos-plugin",
+  "version": "1.0.0",
+  "description": "ChainMesh ElizaOS plugin - AI agent actions for cross-chain data",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "build": "tsc",
+    "test": "vitest",
+    "test:coverage": "vitest --coverage"
+  },
+  "keywords": ["chainmesh", "elizaos", "ai-agents", "plugin"],
+  "license": "MIT",
+  "type": "commonjs",
+  "dependencies": {
+    "@chainmesh/sdk": "file:../sdk"
+  },
+  "devDependencies": {
+    "@types/node": "^25.2.2",
+    "@vitest/coverage-v8": "^4.0.18",
+    "typescript": "^5.9.3",
+    "vitest": "^4.0.18"
+  }
+}

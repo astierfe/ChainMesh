@@ -147,11 +147,15 @@ If fewer than 50% of chains succeed, the pipeline fails. Otherwise, partial data
 
 Currently implemented as TypeScript classes within Module 2's codebase (GoldskyProvider, AlchemyProvider, ProviderFactory).
 
-### Module 6 -- SDK & Plugin (Planned)
+### Module 6 -- SDK & Plugin
 
-TypeScript npm package (`chainmesh-sdk`) exposing a cache-aware API with automatic provider fallback. ElizaOS plugin (`@elizaos/plugin-chainmesh`) enabling AI agents to query ChainMesh through natural language.
+TypeScript SDK (`@chainmesh/sdk`) providing three access strategies: cache-first (on-chain reads via GenericCache), API-first (off-chain via Module 2 API Gateway), and hybrid. Includes adapter helpers that mirror on-chain encoding/decoding for Reputation and Price data types.
 
-Not yet implemented. Interfaces are defined in [Module_Interfaces_ChainMesh.md](docs/Module_Interfaces_ChainMesh.md).
+ElizaOS plugin (`@chainmesh/elizaos-plugin`) wraps the SDK into 5 actions (QUERY_DATA, CHECK_CACHE, REQUEST_UPDATE, GET_REPUTATION, GET_PRICE) that AI agents can invoke through natural language.
+
+66 tests (52 SDK + 14 plugin), Vitest.
+
+Documentation: [Architecture](module6-sdk/docs/MODULE6_ARCHITECTURE.md) | [Specification](module6-sdk/docs/SPEC_Module6_SDK.md)
 
 ---
 
@@ -181,6 +185,10 @@ chainmesh/
     src/utils/                      CircuitBreaker, RetryPolicy, Logger
     workflows/                      n8n JSON definitions
     tests/                          Vitest unit tests
+  module6-sdk/
+    packages/sdk/                   @chainmesh/sdk (core SDK)
+    packages/elizaos-plugin/        @chainmesh/elizaos-plugin
+    docs/                           Architecture + Specification
   docs/                             PRD, TADs, module interfaces
 ```
 
@@ -209,7 +217,7 @@ chainmesh/
 | Module 3 -- AI Engine | Implemented within Module 2 (analyzers). |
 | Module 4 -- Security | Implemented within Module 2 (signers). |
 | Module 5 -- Data Layer | Implemented within Module 2 (providers). |
-| Module 6 -- SDK & Plugin | Planned. Interfaces defined. |
+| Module 6 -- SDK & Plugin | Completed. 66 tests (52 SDK + 14 plugin). |
 
 Supported chains (testnet): Sepolia, Arbitrum Sepolia, Base Sepolia, Optimism Sepolia.
 
@@ -227,6 +235,8 @@ Supported chains (testnet): Sepolia, Arbitrum Sepolia, Base Sepolia, Optimism Se
 | [TAD Part 1](docs/01_TAD_Part1_Introduction_Architecture_Contracts.md) | Architecture overview, contracts |
 | [TAD Part 2](docs/02_TAD_Part2_OffChain_Data_AI.md) | Off-chain, data sources, AI engine |
 | [TAD Part 3](docs/03_TAD_Part3_Security_Infrastructure_Config.md) | Security, infrastructure, configuration |
+| [Module 6 Architecture](module6-sdk/docs/MODULE6_ARCHITECTURE.md) | SDK strategies, adapter pattern, plugin |
+| [Module 6 Specification](module6-sdk/docs/SPEC_Module6_SDK.md) | SDK/plugin API, encoding reference |
 
 ---
 
