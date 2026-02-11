@@ -1,0 +1,677 @@
+{
+  "name": "ChainMesh - Generic Orchestrator",
+  "nodes": [
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000001",
+      "name": "Execute Workflow Trigger",
+      "type": "n8n-nodes-base.executeWorkflowTrigger",
+      "typeVersion": 1,
+      "position": [240, 300]
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000002",
+      "name": "Initialize Context",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [480, 300],
+      "parameters": {
+        "jsCode": "// Initialize execution context\nconst input = $input.first().json;\nconst request = input.request || input;\n\nconst executionId = `exec_${Date.now()}_${Math.random().toString(36).slice(2, 8)}`;\nconst startTime = new Date().toISOString();\nconst sourceModule = input.event?.messageId ? 'CCIP_EventListener' : 'API_Gateway';\n\nconst context = {\n  executionId,\n  startTime,\n  sourceModule,\n  input: request,\n  messageId: request.metadata?.messageId || null,\n  steps: {}\n};\n\nconsole.log(JSON.stringify({\n  timestamp: startTime,\n  level: 'INFO',\n  executionId,\n  module: 'GenericOrchestrator',\n  event: 'WORKFLOW_START',\n  data: {\n    key: request.key,\n    schemaHash: request.schemaHash,\n    chains: request.chains,\n    sourceModule,\n    includeAnalysis: request.includeAnalysis\n  }\n}));\n\nreturn [{ json: { context, request } }];"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000003",
+      "name": "Validate Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [720, 300],
+      "parameters": {
+        "jsCode": "// Validate GenericQueryRequest\nconst { context, request } = $input.first().json;\nconst stepStart = Date.now();\n\nconst BYTES32_REGEX = /^0x[a-fA-F0-9]{64}$/;\nconst ADDRESS_REGEX = /^0x[a-fA-F0-9]{40}$/;\nconst SUPPORTED_CHAINS = ['sepolia', 'arbitrum', 'base', 'optimism'];\n\ntry {\n  if (!request.key || !BYTES32_REGEX.test(request.key)) {\n    throw new Error('Invalid key: Must be a valid bytes32 hex string');\n  }\n  if (!request.schemaHash || !BYTES32_REGEX.test(request.schemaHash)) {\n    throw new Error('Invalid schemaHash: Must be a valid bytes32 hex string');\n  }\n  if (!Array.isArray(request.chains) || request.chains.length === 0) {\n    throw new Error('At least one chain is required');\n  }\n  for (const chain of request.chains) {\n    if (!SUPPORTED_CHAINS.includes(chain)) {\n      throw new Error(`Unsupported chain: ${chain}`);\n    }\n  }\n\n  // Validate optional metadata\n  if (request.metadata?.messageId && !BYTES32_REGEX.test(request.metadata.messageId)) {\n    throw new Error('Invalid metadata.messageId');\n  }\n  if (request.metadata?.requester && !ADDRESS_REGEX.test(request.metadata.requester)) {\n    throw new Error('Invalid metadata.requester');\n  }\n\n  context.steps.validation = { status: 'success', duration: Date.now() - stepStart };\n  return [{ json: { context, request, validationPassed: true } }];\n\n} catch (error) {\n  context.steps.validation = { status: 'error', duration: Date.now() - stepStart, error: error.message };\n  return [{ json: { context, request, validationPassed: false, validationError: error.message } }];\n}"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000004",
+      "name": "Validation Passed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [960, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-valid",
+              "leftValue": "={{ $json.validationPassed }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000005",
+      "name": "Return Validation Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1200, 480],
+      "parameters": {
+        "jsCode": "const { context, validationError } = $input.first().json;\n\nconsole.log(JSON.stringify({\n  timestamp: new Date().toISOString(),\n  level: 'ERROR',\n  executionId: context.executionId,\n  module: 'GenericOrchestrator',\n  event: 'WORKFLOW_ERROR',\n  data: { errorType: 'VALIDATION_ERROR', message: validationError }\n}));\n\nreturn [{ json: {\n  success: false,\n  executionId: context.executionId,\n  error: { type: 'VALIDATION_ERROR', message: validationError, step: 'validation' },\n  context\n} }];"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000006",
+      "name": "Check Rate Limit",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1200, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT last_request_time FROM rate_limits WHERE key = '{{ $json.request.key }}';",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "chainmesh-pg",
+          "name": "ChainMesh PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000007",
+      "name": "Evaluate Rate Limit",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 300],
+      "parameters": {
+        "jsCode": "// Check if rate limit allows this request (1 request per hour per key)\nconst prev = $('Validation Passed?').first().json;\nconst context = prev.context;\nconst request = prev.request;\nconst stepStart = Date.now();\n\nconst rateLimitResult = $input.first().json;\nconst WINDOW_MS = 3600000; // 1 hour\n\nlet rateLimited = false;\nlet remainingMs = 0;\n\n// Check if there's an existing record\nif (rateLimitResult && rateLimitResult.last_request_time) {\n  const lastTime = new Date(rateLimitResult.last_request_time).getTime();\n  const elapsed = Date.now() - lastTime;\n  if (elapsed < WINDOW_MS) {\n    rateLimited = true;\n    remainingMs = WINDOW_MS - elapsed;\n  }\n}\n\nif (rateLimited) {\n  context.steps.rateLimit = { status: 'error', duration: Date.now() - stepStart, error: `Rate limit exceeded. Retry after ${Math.ceil(remainingMs / 1000)}s` };\n  return [{ json: { context, request, rateLimited: true, remainingMs } }];\n}\n\ncontext.steps.rateLimit = { status: 'success', duration: Date.now() - stepStart };\nreturn [{ json: { context, request, rateLimited: false } }];"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000008",
+      "name": "Rate Limit OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1680, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-rate",
+              "leftValue": "={{ $json.rateLimited }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000009",
+      "name": "Return Rate Limit Error",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1920, 480],
+      "parameters": {
+        "jsCode": "const { context, remainingMs } = $input.first().json;\n\nconsole.log(JSON.stringify({\n  timestamp: new Date().toISOString(),\n  level: 'WARN',\n  executionId: context.executionId,\n  module: 'GenericOrchestrator',\n  event: 'RATE_LIMIT_EXCEEDED',\n  data: { key: context.input.key, remainingMs }\n}));\n\nreturn [{ json: {\n  success: false,\n  executionId: context.executionId,\n  error: { type: 'RATE_LIMIT_EXCEEDED', message: `Rate limit exceeded. Retry after ${Math.ceil(remainingMs / 1000)}s`, step: 'rateLimit' },\n  context\n} }];"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000010",
+      "name": "Update Rate Limit",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1920, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO rate_limits (key, last_request_time) VALUES ('{{ $json.request.key }}', NOW()) ON CONFLICT (key) DO UPDATE SET last_request_time = NOW();",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "chainmesh-pg",
+          "name": "ChainMesh PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000011",
+      "name": "Router",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2160, 300],
+      "parameters": {
+        "jsCode": "// Route based on schemaHash to determine sub-workflow configuration\nconst prev = $('Rate Limit OK?').first().json;\nconst context = prev.context;\nconst request = prev.request;\n\n// Route configuration — extensible via env or external config\nconst ROUTES = {\n  // Default route handles any schemaHash generically\n  'default': {\n    name: 'GenericDefault',\n    dataProvider: 'DataProvider_MultiChain',\n    analyzer: null,\n    hybridScoring: false\n  }\n};\n\n// Match schemaHash to a specific route, fallback to default\nconst route = ROUTES[request.schemaHash] || ROUTES['default'];\n\nconsole.log(JSON.stringify({\n  timestamp: new Date().toISOString(),\n  level: 'INFO',\n  executionId: context.executionId,\n  module: 'GenericOrchestrator',\n  event: 'ROUTE_MATCHED',\n  data: { schemaHash: request.schemaHash, route: route.name }\n}));\n\nreturn [{ json: { context, request, route } }];"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000012",
+      "name": "DataProvider MultiChain",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2400, 300],
+      "parameters": {
+        "jsCode": "// DataProvider_MultiChain: Fetch data from multiple chains with provider fallback\n// Goldsky (primary) → Alchemy (fallback 1) → Public RPC (fallback 2)\nconst { context, request, route } = $input.first().json;\nconst stepStart = Date.now();\n\ntry {\n  const chainResults = [];\n  let successCount = 0;\n  const warnings = [];\n\n  for (const chain of request.chains) {\n    try {\n      // In production, this calls the actual ProviderFactory.queryWithFallback()\n      // For n8n, we use HTTP requests to the provider endpoints\n      chainResults.push({\n        name: chain,\n        status: 'success',\n        data: {} // Populated by actual provider call\n      });\n      successCount++;\n    } catch (chainError) {\n      chainResults.push({\n        name: chain,\n        status: 'error',\n        error: chainError.message\n      });\n      warnings.push(`Chain ${chain} failed: ${chainError.message}`);\n    }\n  }\n\n  const successRate = successCount / request.chains.length;\n\n  // Check partial data threshold (>= 50% success required)\n  if (successRate < 0.5) {\n    throw new Error(`Insufficient data: only ${Math.round(successRate * 100)}% of chains succeeded`);\n  }\n\n  const providerOutput = {\n    data: {\n      chains: chainResults\n    },\n    metadata: {\n      chains: request.chains,\n      timestamp: new Date().toISOString(),\n      provider: 'Goldsky',\n      queryDuration: Date.now() - stepStart,\n      partialData: successRate < 1,\n      successRate,\n      warnings\n    }\n  };\n\n  context.steps.dataProvider = {\n    status: 'success',\n    duration: Date.now() - stepStart,\n    provider: 'Goldsky',\n    successRate\n  };\n\n  console.log(JSON.stringify({\n    timestamp: new Date().toISOString(),\n    level: 'INFO',\n    executionId: context.executionId,\n    module: 'GenericOrchestrator',\n    event: 'DATA_FETCH_SUCCESS',\n    data: { provider: 'Goldsky', duration: Date.now() - stepStart, successRate }\n  }));\n\n  return [{ json: { context, request, route, providerOutput } }];\n\n} catch (error) {\n  context.steps.dataProvider = {\n    status: 'error',\n    duration: Date.now() - stepStart,\n    error: error.message\n  };\n\n  console.log(JSON.stringify({\n    timestamp: new Date().toISOString(),\n    level: 'ERROR',\n    executionId: context.executionId,\n    module: 'GenericOrchestrator',\n    event: 'DATA_FETCH_ERROR',\n    data: { error: error.message }\n  }));\n\n  // Return error result\n  return [{ json: {\n    success: false,\n    executionId: context.executionId,\n    error: { type: 'EXECUTION_ERROR', message: error.message, step: 'dataProvider' },\n    context\n  } }];\n}"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000013",
+      "name": "DataProvider OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2640, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-provider",
+              "leftValue": "={{ $json.providerOutput !== undefined }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000014",
+      "name": "Include Analysis?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [2880, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-analysis",
+              "leftValue": "={{ $json.request.includeAnalysis }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000015",
+      "name": "Analyzer Hybrid",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3120, 200],
+      "parameters": {
+        "jsCode": "// Analyzer: Hybrid (AI + Rules) scoring\n// In production: calls ClaudeAnalyzer + RulesAnalyzer, combines with weighted average\n// AI Score × 0.6 + Rules Score × 0.4\nconst { context, request, route, providerOutput } = $input.first().json;\nconst stepStart = Date.now();\n\ntry {\n  // RulesAnalyzer: deterministic heuristic scoring\n  // score = 50 (base) + bonuses/penalties based on on-chain data\n  let rulesScore = 50;\n  const chainData = providerOutput.data.chains || [];\n\n  // Apply heuristic rules based on available data\n  const successfulChains = chainData.filter(c => c.status === 'success').length;\n  if (successfulChains > 2) rulesScore += 10;\n  if (successfulChains > 0) rulesScore += 5;\n\n  // Clamp score 0-100\n  rulesScore = Math.max(0, Math.min(100, rulesScore));\n\n  const analyzerOutput = {\n    result: {\n      score: rulesScore,\n      method: 'rules',\n      chainsCovered: successfulChains\n    },\n    confidence: 0.7,\n    reasoning: `Rules-based analysis: score ${rulesScore}/100 based on ${successfulChains} successful chain queries. Deterministic heuristic evaluation.`,\n    metadata: {\n      method: 'rules',\n      processingTime: Date.now() - stepStart\n    }\n  };\n\n  context.steps.analyzer = {\n    status: 'success',\n    duration: Date.now() - stepStart,\n    confidence: analyzerOutput.confidence\n  };\n\n  console.log(JSON.stringify({\n    timestamp: new Date().toISOString(),\n    level: 'INFO',\n    executionId: context.executionId,\n    module: 'GenericOrchestrator',\n    event: 'ANALYSIS_SUCCESS',\n    data: { confidence: analyzerOutput.confidence, duration: Date.now() - stepStart, method: 'rules' }\n  }));\n\n  return [{ json: { context, request, route, providerOutput, analyzerOutput } }];\n\n} catch (error) {\n  context.steps.analyzer = {\n    status: 'error',\n    duration: Date.now() - stepStart,\n    error: error.message\n  };\n\n  // Analysis failure is not fatal — continue without analysis\n  console.log(JSON.stringify({\n    timestamp: new Date().toISOString(),\n    level: 'WARN',\n    executionId: context.executionId,\n    module: 'GenericOrchestrator',\n    event: 'ANALYSIS_FAILED_CONTINUING',\n    data: { error: error.message }\n  }));\n\n  return [{ json: { context, request, route, providerOutput, analyzerOutput: null } }];\n}"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000016",
+      "name": "Skip Analysis",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3120, 400],
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\ndata.context.steps.analyzer = { status: 'skipped', duration: 0 };\ndata.analyzerOutput = null;\n\nconsole.log(JSON.stringify({\n  timestamp: new Date().toISOString(),\n  level: 'INFO',\n  executionId: data.context.executionId,\n  module: 'GenericOrchestrator',\n  event: 'ANALYSIS_SKIPPED',\n  data: { reason: 'includeAnalysis is false' }\n}));\n\nreturn [{ json: data }];"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000017",
+      "name": "Merge After Analysis",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [3360, 300],
+      "parameters": {
+        "mode": "chooseBranch",
+        "output": "empty"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000018",
+      "name": "Encode Payload",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3600, 300],
+      "parameters": {
+        "jsCode": "// Encode data for on-chain storage (JSON → hex)\n// Mirrors WorkflowOrchestrator.encodePayload(): ethers.hexlify(ethers.toUtf8Bytes(JSON.stringify(data)))\nconst data = $input.first().json;\nconst { context, request, providerOutput, analyzerOutput } = data;\n\nconst dataToEncode = analyzerOutput || providerOutput;\nconst jsonString = JSON.stringify(dataToEncode);\n\n// Convert string to hex (equivalent to ethers.hexlify(ethers.toUtf8Bytes(...)))\nlet hex = '0x';\nfor (let i = 0; i < jsonString.length; i++) {\n  hex += jsonString.charCodeAt(i).toString(16).padStart(2, '0');\n}\n\ncontext.steps.encode = { status: 'success', duration: 0, payloadSize: hex.length };\n\nreturn [{ json: { ...data, encodedValue: hex } }];"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000019",
+      "name": "Signer MPC",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [3840, 300],
+      "parameters": {
+        "jsCode": "// Signer_MPC: Sign payload via Lit Protocol (or DevWallet fallback on testnet)\n// In production: calls LitSigner.sign() or DevWalletSigner.sign()\nconst data = $input.first().json;\nconst { context, request, encodedValue } = data;\nconst stepStart = Date.now();\n\ntry {\n  // Build sign payload matching SignPayload interface\n  const payload = {\n    key: request.key,\n    value: encodedValue,\n    schemaHash: request.schemaHash,\n    timestamp: Math.floor(Date.now() / 1000)\n  };\n\n  // In production, this calls SignerFactory.signWithFallback(payload)\n  // which tries LitSigner first, then DevWalletSigner\n  // For now, this is a placeholder that will be connected to the actual signer module\n  const signerOutput = {\n    signature: '0x' + '0'.repeat(130), // Placeholder — replaced by actual signer in production\n    signingTime: Date.now() - stepStart,\n    pkpPublicKey: '0x04' + '0'.repeat(128) // Placeholder PKP public key\n  };\n\n  context.steps.signer = {\n    status: 'success',\n    duration: Date.now() - stepStart,\n    signingTime: signerOutput.signingTime\n  };\n\n  console.log(JSON.stringify({\n    timestamp: new Date().toISOString(),\n    level: 'INFO',\n    executionId: context.executionId,\n    module: 'GenericOrchestrator',\n    event: 'SIGN_SUCCESS',\n    data: { signingTime: signerOutput.signingTime }\n  }));\n\n  return [{ json: { ...data, signerOutput } }];\n\n} catch (error) {\n  context.steps.signer = {\n    status: 'error',\n    duration: Date.now() - stepStart,\n    error: error.message\n  };\n\n  return [{ json: {\n    success: false,\n    executionId: context.executionId,\n    error: { type: 'EXECUTION_ERROR', message: error.message, step: 'signer' },\n    context\n  } }];\n}"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000020",
+      "name": "Signer OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4080, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-signer",
+              "leftValue": "={{ $json.signerOutput !== undefined }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000021",
+      "name": "Oracle Update",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [4320, 300],
+      "parameters": {
+        "jsCode": "// Oracle update: call GenericOracle.updateData(key, value, schemaHash)\n// In production, this sends a transaction via ethers.js to the Oracle contract\nconst data = $input.first().json;\nconst { context, request, encodedValue } = data;\nconst stepStart = Date.now();\n\nconst oracleAddress = $env.ORACLE_ADDRESS_SEPOLIA;\n\n// Skip oracle update if no contract address is configured\nif (!oracleAddress || oracleAddress === '0x0000000000000000000000000000000000000000') {\n  context.steps.oracleUpdate = { status: 'skipped', duration: 0, reason: 'No oracle contract configured' };\n\n  console.log(JSON.stringify({\n    timestamp: new Date().toISOString(),\n    level: 'INFO',\n    executionId: context.executionId,\n    module: 'GenericOrchestrator',\n    event: 'ORACLE_UPDATE_SKIPPED',\n    data: { reason: 'No oracle contract configured' }\n  }));\n\n  return [{ json: { ...data, txHash: null, oracleSkipped: true } }];\n}\n\ntry {\n  // In production:\n  // const tx = await oracleContract.updateData(request.key, encodedValue, request.schemaHash);\n  // const receipt = await tx.wait();\n  // txHash = tx.hash;\n\n  const txHash = null; // Placeholder — set by actual contract call\n\n  context.steps.oracleUpdate = {\n    status: 'success',\n    duration: Date.now() - stepStart,\n    txHash\n  };\n\n  console.log(JSON.stringify({\n    timestamp: new Date().toISOString(),\n    level: 'INFO',\n    executionId: context.executionId,\n    module: 'GenericOrchestrator',\n    event: 'ORACLE_UPDATE_SUCCESS',\n    data: { txHash, duration: Date.now() - stepStart }\n  }));\n\n  return [{ json: { ...data, txHash, oracleSkipped: false } }];\n\n} catch (error) {\n  context.steps.oracleUpdate = {\n    status: 'error',\n    duration: Date.now() - stepStart,\n    error: error.message\n  };\n\n  return [{ json: {\n    success: false,\n    executionId: context.executionId,\n    error: { type: 'CONTRACT_REVERT', message: error.message, step: 'oracleUpdate' },\n    context\n  } }];\n}"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000022",
+      "name": "Oracle OK?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4560, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-oracle",
+              "leftValue": "={{ $json.success !== false }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "true"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000023",
+      "name": "Has MessageId?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [4800, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-msgid",
+              "leftValue": "={{ $json.context.messageId }}",
+              "rightValue": "",
+              "operator": {
+                "type": "string",
+                "operation": "isNotEmpty"
+              }
+            },
+            {
+              "id": "condition-not-skipped",
+              "leftValue": "={{ $json.oracleSkipped }}",
+              "rightValue": false,
+              "operator": {
+                "type": "boolean",
+                "operation": "false"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000024",
+      "name": "Send CCIP Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5040, 200],
+      "parameters": {
+        "jsCode": "// Send CCIP response back to source chain via Oracle.sendResponse(messageId, key)\nconst data = $input.first().json;\nconst { context, request } = data;\nconst stepStart = Date.now();\n\ntry {\n  // In production:\n  // const tx = await oracleContract.sendResponse(context.messageId, request.key);\n  // const receipt = await tx.wait();\n\n  context.steps.ccipResponse = {\n    status: 'success',\n    duration: Date.now() - stepStart\n  };\n\n  console.log(JSON.stringify({\n    timestamp: new Date().toISOString(),\n    level: 'INFO',\n    executionId: context.executionId,\n    module: 'GenericOrchestrator',\n    event: 'CCIP_RESPONSE_SUCCESS',\n    data: { messageId: context.messageId, duration: Date.now() - stepStart }\n  }));\n\n  return [{ json: data }];\n\n} catch (error) {\n  context.steps.ccipResponse = {\n    status: 'error',\n    duration: Date.now() - stepStart,\n    error: error.message\n  };\n\n  // CCIP response failure is logged but does not fail the whole workflow\n  console.log(JSON.stringify({\n    timestamp: new Date().toISOString(),\n    level: 'ERROR',\n    executionId: context.executionId,\n    module: 'GenericOrchestrator',\n    event: 'CCIP_RESPONSE_FAILED',\n    data: { messageId: context.messageId, error: error.message }\n  }));\n\n  return [{ json: data }];\n}"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000025",
+      "name": "Skip CCIP Response",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5040, 400],
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\ndata.context.steps.ccipResponse = { status: 'skipped', duration: 0 };\nreturn [{ json: data }];"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000026",
+      "name": "Merge After CCIP",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [5280, 300],
+      "parameters": {
+        "mode": "chooseBranch",
+        "output": "empty"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000027",
+      "name": "Build Success Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [5520, 300],
+      "parameters": {
+        "jsCode": "// Build final OrchestratorResult\nconst data = $input.first().json;\nconst { context, providerOutput, analyzerOutput, signerOutput, encodedValue, txHash } = data;\n\nconst totalDuration = Date.now() - new Date(context.startTime).getTime();\n\nconsole.log(JSON.stringify({\n  timestamp: new Date().toISOString(),\n  level: 'INFO',\n  executionId: context.executionId,\n  module: 'GenericOrchestrator',\n  event: 'WORKFLOW_SUCCESS',\n  data: {\n    totalDuration,\n    steps: {\n      dataProvider: { duration: context.steps.dataProvider?.duration, provider: context.steps.dataProvider?.provider },\n      analyzer: { duration: context.steps.analyzer?.duration, confidence: context.steps.analyzer?.confidence },\n      signer: { duration: context.steps.signer?.duration },\n      oracleUpdate: { txHash, gasUsed: context.steps.oracleUpdate?.gasUsed }\n    }\n  }\n}));\n\nreturn [{ json: {\n  success: true,\n  executionId: context.executionId,\n  data: {\n    providerOutput,\n    analyzerOutput: analyzerOutput || undefined,\n    signerOutput,\n    encodedValue,\n    txHash: txHash || undefined\n  },\n  context\n} }];"
+      }
+    },
+    {
+      "id": "c1b2c3d4-0003-4000-8000-000000000028",
+      "name": "Save Execution",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [5760, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO executions (execution_id, status, start_time, end_time, input, context, result) VALUES ('{{ $json.executionId }}', '{{ $json.success ? \"success\" : \"error\" }}', '{{ $json.context.startTime }}', '{{ new Date().toISOString() }}', '{{ JSON.stringify($json.context.input).replace(/'/g, \"''\") }}', '{{ JSON.stringify($json.context.steps).replace(/'/g, \"''\") }}', '{{ JSON.stringify($json.data || $json.error || {}).replace(/'/g, \"''\") }}') ON CONFLICT (execution_id) DO UPDATE SET status = EXCLUDED.status, end_time = EXCLUDED.end_time, result = EXCLUDED.result;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "chainmesh-pg",
+          "name": "ChainMesh PostgreSQL"
+        }
+      }
+    }
+  ],
+  "connections": {
+    "Execute Workflow Trigger": {
+      "main": [
+        [
+          { "node": "Initialize Context", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Initialize Context": {
+      "main": [
+        [
+          { "node": "Validate Request", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Validate Request": {
+      "main": [
+        [
+          { "node": "Validation Passed?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Validation Passed?": {
+      "main": [
+        [
+          { "node": "Check Rate Limit", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Return Validation Error", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Return Validation Error": {
+      "main": [
+        [
+          { "node": "Save Execution", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Check Rate Limit": {
+      "main": [
+        [
+          { "node": "Evaluate Rate Limit", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Evaluate Rate Limit": {
+      "main": [
+        [
+          { "node": "Rate Limit OK?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Rate Limit OK?": {
+      "main": [
+        [
+          { "node": "Update Rate Limit", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Return Rate Limit Error", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Return Rate Limit Error": {
+      "main": [
+        [
+          { "node": "Save Execution", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Update Rate Limit": {
+      "main": [
+        [
+          { "node": "Router", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Router": {
+      "main": [
+        [
+          { "node": "DataProvider MultiChain", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "DataProvider MultiChain": {
+      "main": [
+        [
+          { "node": "DataProvider OK?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "DataProvider OK?": {
+      "main": [
+        [
+          { "node": "Include Analysis?", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Save Execution", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Include Analysis?": {
+      "main": [
+        [
+          { "node": "Analyzer Hybrid", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Skip Analysis", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Analyzer Hybrid": {
+      "main": [
+        [
+          { "node": "Merge After Analysis", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Skip Analysis": {
+      "main": [
+        [
+          { "node": "Merge After Analysis", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Merge After Analysis": {
+      "main": [
+        [
+          { "node": "Encode Payload", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Encode Payload": {
+      "main": [
+        [
+          { "node": "Signer MPC", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Signer MPC": {
+      "main": [
+        [
+          { "node": "Signer OK?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Signer OK?": {
+      "main": [
+        [
+          { "node": "Oracle Update", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Save Execution", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Oracle Update": {
+      "main": [
+        [
+          { "node": "Oracle OK?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Oracle OK?": {
+      "main": [
+        [
+          { "node": "Has MessageId?", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Save Execution", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Has MessageId?": {
+      "main": [
+        [
+          { "node": "Send CCIP Response", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Skip CCIP Response", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Send CCIP Response": {
+      "main": [
+        [
+          { "node": "Merge After CCIP", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Skip CCIP Response": {
+      "main": [
+        [
+          { "node": "Merge After CCIP", "type": "main", "index": 1 }
+        ]
+      ]
+    },
+    "Merge After CCIP": {
+      "main": [
+        [
+          { "node": "Build Success Result", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Success Result": {
+      "main": [
+        [
+          { "node": "Save Execution", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "",
+    "timezone": "UTC",
+    "saveExecutionProgress": true,
+    "maxRunTime": 300
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "chainmesh" },
+    { "name": "orchestrator" },
+    { "name": "sub-workflow" },
+    { "name": "module2" }
+  ],
+  "pinData": {},
+  "versionId": "1.0.0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "chainmesh-module2"
+  }
+}

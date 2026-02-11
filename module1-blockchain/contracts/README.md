@@ -105,11 +105,34 @@ ARBITRUM_ROUTER=0x2a138cDc982cb69107144663da6332130c6b8351
 
 ## 🚢 Déploiement
 
+### Déploiement Rapide
+
 ```bash
-# TODO: Scripts à créer dans /script
-forge script script/DeployOracle.s.sol --rpc-url $ETHEREUM_RPC_URL --broadcast
-forge script script/DeployCache.s.sol --rpc-url $ARBITRUM_RPC_URL --broadcast
+# 1. Déployer GenericOracle sur Sepolia
+./script/deploy-oracle.sh
+
+# 2. Déployer GenericCache sur Arbitrum et Base
+./script/deploy-cache.sh arbitrum-sepolia
+./script/deploy-cache.sh base-sepolia
+
+# 3. Configurer automatiquement les contrats
+./script/configure-contracts.sh
+
+# 4. Vérifier les déploiements
+./script/test-deployment.sh
 ```
+
+### Scripts Disponibles
+
+| Script | Description |
+|--------|-------------|
+| `deploy-oracle.sh` | Déploie GenericOracle sur Sepolia |
+| `deploy-cache.sh <chain>` | Déploie GenericCache (arbitrum-sepolia, base-sepolia) |
+| `configure-contracts.sh` | Configure les permissions CCIP et finance les contrats |
+| `test-deployment.sh` | Vérifie les contrats déployés |
+| `show-addresses.sh` | Affiche les adresses déployées |
+
+Voir [DEPLOYMENT_GUIDE.md](DEPLOYMENT_GUIDE.md) pour plus de détails.
 
 ## 🔐 Sécurité
 
@@ -126,7 +149,7 @@ forge script script/DeployCache.s.sol --rpc-url $ARBITRUM_RPC_URL --broadcast
 - [x] Tests unitaires (40/40)
 - [x] Coverage >90%
 - [x] Gas optimisé
-- [ ] Scripts déploiement
+- [x] Scripts déploiement
 - [ ] Audit Slither
 - [ ] Déploiement testnets
 

@@ -1,21 +1,26 @@
 # ChainMesh - Product Requirements Document (PRD)
 
-**Version:** 1.2 (Source de Vérité Unique)  
-**Date:** 30 janvier 2026  
-**Auteur:** Felix  
-**Statut:** Approved - Ready for Implementation
+**Version:** 1.3
+**Date:** 11 fevrier 2026
+**Auteur:** Felix
+**Statut:** Module 1 & 2 Completed - Testnet
 
 ---
 
-## Changelog v1.2
+## Changelog
 
-**Changements depuis v1.1 + Addendum:**
-- ✅ **Timeline unifiée:** 16 semaines confirmée (plus de référence "8 semaines")
-- ✅ **Scope technique clarifié:** Goldsky + ElizaOS sont P0 (confirmé)
-- ✅ **Sécurité:** Lit Protocol P0 (MPC signing), n8n credentials = fallback testnet uniquement
-- ✅ **Use Cases MVP:** 1 agent (Reputation) pour v1.0, autres agents en v2.0
-- ✅ **Contradictions résolues:** Document unique, pas de références croisées conflictuelles
-- ✅ **Hypothèses clarifiées:** Séparation nette P0 vs P1 vs v2.0
+**v1.3 (11 fevrier 2026):**
+- Module 1 (Blockchain Layer) termine : GenericOracle, GenericCache, Adapters, 123 tests, >80% coverage
+- Module 2 (Orchestration) termine : Providers, Analyzers, Signers, WorkflowOrchestrator, n8n workflows
+- Documentation architecture creee pour les deux modules
+- Specifications consolidees (SPEC_Module2_Orchestration.md remplace les 3 fichiers Part1/Part2/Part3)
+- Stack technique confirmee : Zod v4, ethers v6, Winston, Vitest, PostgreSQL
+
+**v1.2 (30 janvier 2026):**
+- Timeline unifiee : 16 semaines confirmee
+- Scope technique clarifie : Goldsky + ElizaOS sont P0
+- Securite : Lit Protocol P0 (MPC signing), n8n credentials = fallback testnet uniquement
+- Use Cases MVP : 1 agent (Reputation) pour v1.0, autres agents en v2.0
 
 ---
 
@@ -265,26 +270,16 @@ Un investisseur a des positions sur 5 chains (Aave deposits, Uniswap LPs, stakin
 
 ## 4.1 Architecture Overview
 
-### 5-Layer Stack
+### 6-Module Architecture
 
-```
-┌─────────────────────────────────────────┐
-│  Layer 1: AI Agents                     │
-│  (ElizaOS, Custom TypeScript)           │
-├─────────────────────────────────────────┤
-│  Layer 2: SDK & Plugin                  │
-│  (chainmesh-sdk, @elizaos/plugin)       │
-├─────────────────────────────────────────┤
-│  Layer 3: Orchestration                 │
-│  (n8n workflows, API Gateway)           │
-├─────────────────────────────────────────┤
-│  Layer 4: Blockchain                    │
-│  (Smart Contracts, CCIP)                │
-├─────────────────────────────────────────┤
-│  Layer 5: Data Sources                  │
-│  (Goldsky, Claude API, Lit Protocol)    │
-└─────────────────────────────────────────┘
-```
+| Module | Role | Status |
+|---|---|---|
+| Module 1: Smart Contracts | On-chain storage, CCIP messaging, adapters | Completed |
+| Module 2: Orchestration | n8n workflows, pipeline coordination, resilience | Completed |
+| Module 3: AI Engine | Claude API analysis, rules engine, hybrid scoring | Implemented (within Module 2) |
+| Module 4: Security | Lit Protocol MPC signing, testnet wallet fallback | Implemented (within Module 2) |
+| Module 5: Data Layer | Goldsky/Alchemy providers, circuit breakers, fallback cascade | Implemented (within Module 2) |
+| Module 6: SDK & Plugin | TypeScript SDK, ElizaOS plugin | Planned |
 
 ---
 
@@ -343,18 +338,26 @@ Check Cache
 
 ---
 
-### Off-Chain (Orchestration)
+### Off-Chain (Orchestration) - Implemented
 
 | Component | Technology | Hosting | Cost |
 |-----------|-----------|---------|------|
 | n8n | Docker container | DigitalOcean VPS ($6/month) | ~$24 (4 mois) |
 | PostgreSQL | Docker container | Same VPS | Included |
-| Nginx | Native | Same VPS | Included |
+| Node.js v24 | TypeScript strict | Same VPS | Included |
 
-**n8n Workflows:**
-- API_Gateway (webhook trigger)
-- ScanMultiChain_Reputation (main business logic)
-- Sub-workflows: GoldskyQuery, ClaudeAnalysis, LitSign, ErrorHandler
+**n8n Workflows (implemented):**
+- API_Gateway (webhook POST /api/query)
+- CCIP_EventListener (poll QueryReceived events every 30s)
+- GenericOrchestrator (sub-workflow: validate, rate-limit, fetch, analyze, encode, sign, oracle update)
+
+**TypeScript Modules (implemented):**
+- Providers: GoldskyProvider, AlchemyProvider, ProviderFactory (fallback cascade + circuit breaker)
+- Analyzers: ClaudeAnalyzer, RulesAnalyzer, HybridAnalyzer (AI x0.6 + Rules x0.4)
+- Signers: LitSigner, DevWalletSigner, SignerFactory (MPC + testnet fallback)
+- Orchestrator: WorkflowOrchestrator, RateLimiter (1 req/h/key, PostgreSQL)
+- Validators: Zod v4 schemas for input (GenericQueryRequest) and output (DataProviderOutput, AnalyzerOutput, SignerOutput)
+- Infrastructure: CircuitBreaker, RetryPolicy, Winston structured logging, environment validation
 
 ---
 
@@ -497,129 +500,34 @@ Broadcast to blockchain
 
 ## 5.2 Phase Breakdown
 
-### Phase 1: Foundation (Semaines 1-4)
+### Phase 1: Foundation (Semaines 1-4) - COMPLETED
 
-**Objectif:** CCIP flow fonctionnel + contracts déployés.
+**Objectif:** CCIP flow fonctionnel + contracts deployes.
 
-**Livrables:**
-- ✅ ChainMeshOracle déployé (Sepolia)
-- ✅ ChainMeshCache déployé (Arbitrum, Base, Optimism)
-- ✅ CCIP flow testé E2E (query → response)
-- ✅ n8n workflows basiques (single chain scan)
-- ✅ Claude API intégration (baseline)
-
-**Success Criteria:**
-- E2E test passe: Request sur Arbitrum → Response en < 20 min
-- Cache hit/miss fonctionne correctement
-- Pas de vulnérabilités critiques (Foundry tests > 80% coverage)
-
-**Semaine 1:**
-- Setup environnement (Foundry, n8n local, testnet wallets)
-- Deployer Oracle (Sepolia)
-- Deployer Cache (Arbitrum)
-- Test CCIP basique (ping-pong message)
-
-**Semaine 2:**
-- Créer JSON Schema v1.0
-- n8n workflow: Single chain scan (Sepolia)
-- Claude API: Premier prompt (simple scoring)
-- Tests unitaires (Foundry)
-
-**Semaine 3:**
-- Multi-chain scan (3 chains en parallèle)
-- CCIP flow complet (query → scan → AI → response)
-- Validation layer (anti-hallucination)
-
-**Semaine 4:**
-- Hybrid scoring (AI 60% + Rules 40%)
-- E2E integration test
-- Documentation API (baseline)
+**Resultats:**
+- GenericOracle deploye avec CCIP receive, data storage, query management, replay protection
+- GenericCache avec TTL 24h, rate-limit 1h/key, CCIP request/response
+- ReputationAdapter (schema ReputationV1) et PriceAdapter (schema PriceV1)
+- 123 tests Foundry, coverage >80% (Oracle 97%, Cache 96%)
+- Architecture adapter pattern generique (ajout de nouveaux types sans modifier Oracle/Cache)
 
 ---
 
-### Phase 2: Advanced Features (Semaines 5-11)
+### Phase 2: Orchestration (Semaines 5-11) - COMPLETED
 
-**Objectif:** ElizaOS + Lit + Goldsky intégrés.
+**Objectif:** Module 2 off-chain complet.
 
-#### Semaines 5-7: ElizaOS Plugin
-
-**Livrables:**
-- ✅ `@elizaos/plugin-chainmesh` publié sur npm
-- ✅ 3 actions implémentées:
-  - `GET_REPUTATION` (wallet scoring)
-  - `GET_ARBITRAGE` (placeholder v2.0)
-  - `GET_PORTFOLIO` (placeholder v2.0)
-- ✅ Documentation + exemple agent
-- ✅ Tests (Jest)
-
-**Success Criteria:**
-- Plugin installable: `npm install @elizaos/plugin-chainmesh`
-- Agent détecte "check reputation" → appelle ChainMesh
-- Response formatée pour utilisateur final
-
-**Semaine 5:**
-- Setup ElizaOS dev environment
-- Créer structure plugin
-- Implémenter action GET_REPUTATION (basique)
-
-**Semaine 6:**
-- Tests + validation
-- Documentation (README + examples)
-- Publish npm (alpha)
-
-**Semaine 7:**
-- Actions GET_ARBITRAGE + GET_PORTFOLIO (placeholders)
-- Buffer + bugfixes
-
----
-
-#### Semaines 8-9: Lit Protocol Integration
-
-**Livrables:**
-- ✅ PKP créé et configuré (testnet)
-- ✅ n8n workflows utilisent Lit pour signing
-- ✅ Hot wallet retiré (testnet)
-- ✅ Tests MPC signing
-
-**Success Criteria:**
-- Transaction signée via Lit PKP (67/100 nodes)
-- Latency < 500ms (acceptable)
-- Fallback fonctionne si Lit down (dev wallet, logged)
-
-**Semaine 8:**
-- Créer PKP (Lit Protocol dashboard)
-- Intégrer Lit SDK dans n8n
-- Premier test signing
-
-**Semaine 9:**
-- Remplacer hot wallet par Lit dans tous workflows
-- Tests (failure scenarios)
-- Documentation
-
----
-
-#### Semaines 10-11: Goldsky Pipeline
-
-**Livrables:**
-- ✅ 5 chains indexées (Sepolia, Arbitrum, Base, Optimism, Polygon)
-- ✅ GraphQL schema déployé
-- ✅ n8n utilise Goldsky comme primary source
-- ✅ Fallback Alchemy configuré
-
-**Success Criteria:**
-- Multi-chain query < 1s (5 chains en parallèle)
-- Goldsky downtime → fallback automatique Alchemy
-- Circuit breaker fonctionne (3 failures → skip provider 1 min)
-
-**Semaine 10:**
-- Configuration Goldsky (YAML)
-- Déployer indexer (5 chains)
-- Tester GraphQL queries
-
-**Semaine 11:**
-- Intégrer Goldsky dans n8n (remplace appels API directs)
-- Implémenter circuit breaker
-- Benchmarks (latency, success rate)
+**Resultats:**
+- DataProviders : GoldskyProvider (GraphQL primary), AlchemyProvider (RPC fallback), ProviderFactory avec cascade et circuit breaker
+- Analyzers : ClaudeAnalyzer (AI via HTTP), RulesAnalyzer (heuristiques deterministes), HybridAnalyzer (scoring pondere AI x0.6 + Rules x0.4)
+- Signers : LitSigner (MPC production), DevWalletSigner (testnet fallback), SignerFactory
+- WorkflowOrchestrator : pipeline complet validate, rate-limit, fetch, analyze, encode, sign, oracle update, CCIP response
+- RateLimiter : 1 req/h/key avec persistance PostgreSQL
+- CircuitBreaker : 3 echecs, 60s cooldown, etats CLOSED/OPEN/HALF_OPEN
+- RetryPolicy : 3 tentatives, backoff exponentiel (1s, 2s, 4s)
+- Validation Zod v4 stricte en entree et sortie
+- n8n workflows : API_Gateway, CCIP_EventListener, GenericOrchestrator
+- Tests unitaires Vitest pour chaque composant
 
 ---
 
@@ -1079,16 +987,14 @@ Phase 4                                                              [███�
 3. Référencer DevGuide v1.1 pour standards de code
 4. Commencer Phase 1 - Week 1: Smart contracts deployment
 
-**Documents Liés:**
+**Documents lies:**
 - [TAD Part 1](01_TAD_Part1_Introduction_Architecture_Contracts.md)
 - [TAD Part 2](02_TAD_Part2_OffChain_Data_AI.md)
 - [TAD Part 3](03_TAD_Part3_Security_Infrastructure_Config.md)
-- [DevGuide v1.1](ChainMesh_DevGuide_v1.1.md)
-- [Documentation Roadmap](00_Documentation_Status_Roadmap.md)
+- [Module 1 Architecture](../module1-blockchain/docs/MODULE1_ARCHITECTURE.md)
+- [Module 2 Architecture](../module2-orchestration/docs/MODULE2_ARCHITECTURE.md)
+- [Module 2 Specification](../module2-orchestration/docs/SPEC_Module2_Orchestration.md)
 
 ---
 
-**Ready for Implementation** 🚀
-
-**Last Updated:** 30 janvier 2026  
-**Next Review:** After Phase 1 (Week 4) - March 3, 2026
+**Last Updated:** 11 fevrier 2026

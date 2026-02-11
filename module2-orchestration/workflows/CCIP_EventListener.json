@@ -1,0 +1,336 @@
+{
+  "name": "ChainMesh - CCIP Event Listener",
+  "nodes": [
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000001",
+      "name": "Schedule Trigger",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [240, 300],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "seconds",
+              "secondsInterval": 30
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000002",
+      "name": "Get Last Processed Block",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [480, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT COALESCE(MAX(block_number), 0) AS last_block FROM processed_events;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "chainmesh-pg",
+          "name": "ChainMesh PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000003",
+      "name": "Query Oracle Events",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [720, 300],
+      "parameters": {
+        "method": "POST",
+        "url": "={{ $env.SEPOLIA_RPC }}",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'eth_getLogs', params: [{ address: $env.ORACLE_ADDRESS_SEPOLIA, topics: ['0x' + 'QueryReceived(bytes32,bytes32,bytes32,uint64,address)'.split('').reduce((h, c) => { const code = c.charCodeAt(0); return ((h << 5) - h + code) | 0; }, 0).toString(16).padStart(64, '0')], fromBlock: '0x' + (Number($('Get Last Processed Block').first().json.last_block) + 1).toString(16), toBlock: 'latest' }] }) }}",
+        "options": {
+          "timeout": 10000,
+          "response": {
+            "response": {
+              "fullResponse": false,
+              "responseFormat": "json"
+            }
+          }
+        }
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000004",
+      "name": "Decode Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [960, 300],
+      "parameters": {
+        "jsCode": "// Decode QueryReceived events from eth_getLogs response\nconst response = $input.first().json;\nconst logs = response.result || [];\n\nif (!logs || logs.length === 0) {\n  return [{ json: { events: [], count: 0 } }];\n}\n\nconst events = logs.map(log => {\n  // QueryReceived(bytes32 indexed messageId, bytes32 indexed key, bytes32 schemaHash, uint64 sourceChain, address requester)\n  // topics[0] = event signature hash\n  // topics[1] = messageId (indexed)\n  // topics[2] = key (indexed)\n  // data = abi.encode(schemaHash, sourceChain, requester)\n  const messageId = log.topics[1];\n  const key = log.topics[2];\n\n  // Decode non-indexed params from data\n  // data layout: bytes32 schemaHash (0-64) + uint64 sourceChain (64-128) + address requester (128-192)\n  const data = log.data.slice(2); // remove 0x\n  const schemaHash = '0x' + data.slice(0, 64);\n  const sourceChain = parseInt(data.slice(64, 128), 16).toString();\n  const requester = '0x' + data.slice(152, 192); // address is last 20 bytes of 32-byte slot\n\n  return {\n    messageId,\n    key,\n    schemaHash,\n    sourceChain,\n    requester,\n    blockNumber: parseInt(log.blockNumber, 16),\n    transactionHash: log.transactionHash,\n    logIndex: parseInt(log.logIndex, 16)\n  };\n});\n\nreturn [{ json: { events, count: events.length } }];"
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000005",
+      "name": "Has Events?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1200, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-events",
+              "leftValue": "={{ $json.count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000006",
+      "name": "Log No Events",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 480],
+      "parameters": {
+        "jsCode": "console.log(JSON.stringify({\n  timestamp: new Date().toISOString(),\n  level: 'DEBUG',\n  module: 'CCIP_EventListener',\n  event: 'NO_NEW_EVENTS',\n  message: 'No new QueryReceived events found'\n}));\n\nreturn [{ json: { status: 'idle', message: 'No new events' } }];"
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000007",
+      "name": "Split Into Items",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [1440, 300],
+      "parameters": {
+        "jsCode": "// Split events array into individual items for processing\nconst events = $input.first().json.events;\nreturn events.map(event => ({ json: event }));"
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000008",
+      "name": "Check Idempotency",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [1680, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "SELECT message_id FROM processed_events WHERE message_id = '{{ $json.messageId }}';",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "chainmesh-pg",
+          "name": "ChainMesh PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000009",
+      "name": "Already Processed?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [1920, 300],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "condition-idempotent",
+              "leftValue": "={{ $json.length }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000010",
+      "name": "Log Duplicate Skip",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2160, 480],
+      "parameters": {
+        "jsCode": "const event = $('Split Into Items').first().json;\n\nconsole.log(JSON.stringify({\n  timestamp: new Date().toISOString(),\n  level: 'WARN',\n  module: 'CCIP_EventListener',\n  event: 'DUPLICATE_EVENT_SKIPPED',\n  data: { messageId: event.messageId }\n}));\n\nreturn [{ json: { status: 'skipped', messageId: event.messageId, reason: 'already_processed' } }];"
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000011",
+      "name": "Build Query Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2160, 300],
+      "parameters": {
+        "jsCode": "// Build GenericQueryRequest from decoded CCIP event\nconst event = $('Split Into Items').first().json;\n\n// Map sourceChain selector to chain name\nconst CHAIN_SELECTORS = {\n  '16015286601757825753': 'sepolia',\n  '3478487238524512106': 'arbitrum',\n  '10344971235874465080': 'base',\n  '5224473277236331295': 'optimism'\n};\n\nconst sourceChainName = CHAIN_SELECTORS[event.sourceChain] || 'sepolia';\n\n// Default: query all supported chains\nconst chains = ['sepolia', 'arbitrum', 'base'];\n\nconst queryRequest = {\n  key: event.key,\n  schemaHash: event.schemaHash,\n  chains: chains,\n  includeAnalysis: true,\n  options: {\n    timeoutMs: 180000,\n    fallbackProviders: true\n  },\n  metadata: {\n    messageId: event.messageId,\n    sourceChain: sourceChainName,\n    requester: event.requester\n  }\n};\n\nconsole.log(JSON.stringify({\n  timestamp: new Date().toISOString(),\n  level: 'INFO',\n  module: 'CCIP_EventListener',\n  event: 'PROCESSING_EVENT',\n  data: {\n    messageId: event.messageId,\n    key: event.key,\n    schemaHash: event.schemaHash,\n    sourceChain: sourceChainName\n  }\n}));\n\nreturn [{ json: { request: queryRequest, event } }];"
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000012",
+      "name": "Call GenericOrchestrator",
+      "type": "n8n-nodes-base.executeWorkflow",
+      "typeVersion": 1,
+      "position": [2400, 300],
+      "parameters": {
+        "source": "parameter",
+        "workflowId": "={{ $env.ORCHESTRATOR_WORKFLOW_ID }}",
+        "options": {
+          "waitForSubWorkflow": true
+        }
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000013",
+      "name": "Mark Event Processed",
+      "type": "n8n-nodes-base.postgres",
+      "typeVersion": 2.5,
+      "position": [2640, 300],
+      "parameters": {
+        "operation": "executeQuery",
+        "query": "INSERT INTO processed_events (message_id, block_number, processed_at, execution_id, status) VALUES ('{{ $('Split Into Items').first().json.messageId }}', {{ $('Split Into Items').first().json.blockNumber }}, NOW(), '{{ $json.executionId }}', '{{ $json.success ? \"success\" : \"error\" }}') ON CONFLICT (message_id) DO NOTHING;",
+        "options": {}
+      },
+      "credentials": {
+        "postgres": {
+          "id": "chainmesh-pg",
+          "name": "ChainMesh PostgreSQL"
+        }
+      }
+    },
+    {
+      "id": "b1b2c3d4-0002-4000-8000-000000000014",
+      "name": "Log Execution Result",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [2880, 300],
+      "parameters": {
+        "jsCode": "const result = $('Call GenericOrchestrator').first().json;\nconst event = $('Split Into Items').first().json;\n\nconst logLevel = result.success ? 'INFO' : 'ERROR';\nconst logEvent = result.success ? 'CCIP_EVENT_PROCESSED' : 'CCIP_EVENT_FAILED';\n\nconsole.log(JSON.stringify({\n  timestamp: new Date().toISOString(),\n  level: logLevel,\n  module: 'CCIP_EventListener',\n  event: logEvent,\n  data: {\n    messageId: event.messageId,\n    executionId: result.executionId,\n    success: result.success,\n    error: result.error || null\n  }\n}));\n\nreturn [{ json: { status: result.success ? 'processed' : 'failed', messageId: event.messageId, executionId: result.executionId } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Schedule Trigger": {
+      "main": [
+        [
+          { "node": "Get Last Processed Block", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Get Last Processed Block": {
+      "main": [
+        [
+          { "node": "Query Oracle Events", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Query Oracle Events": {
+      "main": [
+        [
+          { "node": "Decode Events", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Decode Events": {
+      "main": [
+        [
+          { "node": "Has Events?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Has Events?": {
+      "main": [
+        [
+          { "node": "Split Into Items", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Log No Events", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Split Into Items": {
+      "main": [
+        [
+          { "node": "Check Idempotency", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Check Idempotency": {
+      "main": [
+        [
+          { "node": "Already Processed?", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Already Processed?": {
+      "main": [
+        [
+          { "node": "Build Query Request", "type": "main", "index": 0 }
+        ],
+        [
+          { "node": "Log Duplicate Skip", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Build Query Request": {
+      "main": [
+        [
+          { "node": "Call GenericOrchestrator", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Call GenericOrchestrator": {
+      "main": [
+        [
+          { "node": "Mark Event Processed", "type": "main", "index": 0 }
+        ]
+      ]
+    },
+    "Mark Event Processed": {
+      "main": [
+        [
+          { "node": "Log Execution Result", "type": "main", "index": 0 }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveManualExecutions": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "errorWorkflow": "",
+    "timezone": "UTC",
+    "saveExecutionProgress": true,
+    "maxRunTime": 300
+  },
+  "staticData": null,
+  "tags": [
+    { "name": "chainmesh" },
+    { "name": "ccip" },
+    { "name": "event-listener" },
+    { "name": "module2" }
+  ],
+  "pinData": {},
+  "versionId": "1.0.0",
+  "meta": {
+    "templateCredsSetupCompleted": true,
+    "instanceId": "chainmesh-module2"
+  }
+}
