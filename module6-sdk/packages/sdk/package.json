@@ -9,7 +9,13 @@
     "test": "vitest",
     "test:coverage": "vitest --coverage"
   },
-  "keywords": ["chainmesh", "ccip", "cross-chain", "sdk", "ai-agents"],
+  "keywords": [
+    "chainmesh",
+    "ccip",
+    "cross-chain",
+    "sdk",
+    "ai-agents"
+  ],
   "license": "MIT",
   "type": "commonjs",
   "dependencies": {
@@ -21,6 +27,7 @@
     "@types/node": "^25.2.2",
     "@vitest/coverage-v8": "^4.0.18",
     "typescript": "^5.9.3",
-    "vitest": "^4.0.18"
+    "vitest": "^4.0.18",
+    "winston": "^3.19.0"
   }
 }
